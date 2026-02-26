@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Book, Folder, ChevronRight, Search, CheckCircle, Video,
@@ -6,8 +6,10 @@ import {
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles
 } from 'lucide-react';
+import { supabase } from './supabase';
 
-// 유튜브 ID 추출 유틸리티
+const SAVE_ID = 'main_save';
+
 const getYoutubeId = (url) => {
   if (!url) return null;
   const regExp = /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/)([^#\&\?]*).*/;
@@ -17,23 +19,13 @@ const getYoutubeId = (url) => {
 
 export default function App() {
   // --- 상태 관리 ---
-
-  // 1. 데이터베이스 (수동 저장 버전)
-  const [databases, setDatabases] = useState(() => {
-    const saved = localStorage.getItem('booknote_web_final');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
-    }
-    return null;
-  });
-
-  const [currentLibrary, setCurrentLibrary] = useState(databases ? Object.keys(databases)[0] : '');
-
-  const libData = databases && currentLibrary ? databases[currentLibrary] : { books: [], chapters: [], details: [], customGenres: [] };
-  const [books, setBooks] = useState(libData.books);
-  const [chapters, setChapters] = useState(libData.chapters);
-  const [details, setDetails] = useState(libData.details);
-  const [customGenres, setCustomGenres] = useState(libData.customGenres || []);
+  const [isAppLoading, setIsAppLoading] = useState(true);
+  const [databases, setDatabases] = useState(null);
+  const [currentLibrary, setCurrentLibrary] = useState('');
+  const [books, setBooks] = useState([]);
+  const [chapters, setChapters] = useState([]);
+  const [details, setDetails] = useState([]);
+  const [customGenres, setCustomGenres] = useState([]);
 
   const [viewMode, setViewMode] = useState('shelf');
   const [theme, setTheme] = useState('sepia');
@@ -46,9 +38,8 @@ export default function App() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
-  const [isSaved, setIsSaved] = useState(false); // 저장 피드백 상태
+  const [isSaved, setIsSaved] = useState(false);
 
-  // 맞춤법 상태
   const [spellCorrection, setSpellCorrection] = useState('');
   const [spellMessage, setSpellMessage] = useState('');
   const [isCheckingSpelling, setIsCheckingSpelling] = useState(false);
@@ -69,9 +60,118 @@ export default function App() {
   };
   const currentTheme = themeStyles[theme];
 
+  // --- 자동저장 refs ---
+  const autoSaveTimerRef = useRef(null);
+  const isInitialized = useRef(false);
+  // stale closure 방지: setTimeout 내부에서 항상 최신값 참조
+  const databasesRef = useRef(databases);
+  const currentLibraryRef = useRef(currentLibrary);
+  useEffect(() => { databasesRef.current = databases; }, [databases]);
+  useEffect(() => { currentLibraryRef.current = currentLibrary; }, [currentLibrary]);
+
+  // --- 앱 시작 시 Supabase에서 데이터 불러오기 ---
+  useEffect(() => {
+    const loadFromCloud = async () => {
+      try {
+        const { data } = await supabase
+          .from('booknote_saves')
+          .select('data')
+          .eq('id', SAVE_ID)
+          .single();
+
+        if (data && data.data) {
+          const cloudDb = data.data;
+          const firstLib = Object.keys(cloudDb)[0];
+          setDatabases(cloudDb);
+          setCurrentLibrary(firstLib);
+          setBooks(cloudDb[firstLib].books || []);
+          setChapters(cloudDb[firstLib].chapters || []);
+          setDetails(cloudDb[firstLib].details || []);
+          setCustomGenres(cloudDb[firstLib].customGenres || []);
+          localStorage.setItem('booknote_web_final', JSON.stringify(cloudDb));
+        } else {
+          // 클라우드에 없으면 로컬 캐시 시도
+          const local = localStorage.getItem('booknote_web_final');
+          if (local) {
+            const localDb = JSON.parse(local);
+            const firstLib = Object.keys(localDb)[0];
+            setDatabases(localDb);
+            setCurrentLibrary(firstLib);
+            setBooks(localDb[firstLib].books || []);
+            setChapters(localDb[firstLib].chapters || []);
+            setDetails(localDb[firstLib].details || []);
+            setCustomGenres(localDb[firstLib].customGenres || []);
+          } else {
+            setDatabases(null);
+          }
+        }
+      } catch (err) {
+        console.error('클라우드 로딩 실패, 로컬 캐시 사용:', err);
+        const local = localStorage.getItem('booknote_web_final');
+        if (local) {
+          try {
+            const localDb = JSON.parse(local);
+            const firstLib = Object.keys(localDb)[0];
+            setDatabases(localDb);
+            setCurrentLibrary(firstLib);
+            setBooks(localDb[firstLib].books || []);
+            setChapters(localDb[firstLib].chapters || []);
+            setDetails(localDb[firstLib].details || []);
+            setCustomGenres(localDb[firstLib].customGenres || []);
+          } catch (e) { setDatabases(null); }
+        } else {
+          setDatabases(null);
+        }
+      } finally {
+        setIsAppLoading(false);
+      }
+    };
+    loadFromCloud();
+  }, []);
+
+  // ★ 자동저장 effect (isInitialized effect보다 먼저 정의 → 초기 로드 시 건너뜀)
+  useEffect(() => {
+    if (!isInitialized.current || !databasesRef.current) return;
+
+    setIsSaved('saving');
+    clearTimeout(autoSaveTimerRef.current);
+
+    autoSaveTimerRef.current = setTimeout(async () => {
+      // ref를 통해 항상 최신 databases, currentLibrary 참조
+      const updatedDb = {
+        ...databasesRef.current,
+        [currentLibraryRef.current]: { books, chapters, details, customGenres }
+      };
+      setDatabases(updatedDb);
+      localStorage.setItem('booknote_web_final', JSON.stringify(updatedDb));
+
+      const { error } = await supabase
+        .from('booknote_saves')
+        .upsert({ id: SAVE_ID, data: updatedDb });
+
+      if (!error) {
+        setIsSaved(true);
+        setTimeout(() => setIsSaved(false), 2000);
+      } else {
+        console.error('클라우드 저장 실패:', error);
+        setIsSaved('error');
+        setTimeout(() => setIsSaved(false), 3000);
+      }
+    }, 2000);
+
+    return () => clearTimeout(autoSaveTimerRef.current);
+  }, [books, chapters, details, customGenres]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ★ isInitialized: 자동저장 effect 이후에 정의해야 초기 로드를 건너뜀
+  useEffect(() => {
+    if (!isAppLoading) {
+      isInitialized.current = true;
+    }
+  }, [isAppLoading]);
+
   // --- 로직 ---
 
-  const handleInitialSetup = () => {
+  const handleInitialSetup = async () => {
     if (!setupName.trim()) return alert("이름을 입력해주세요!");
     const name = setupName.trim();
     const newDb = { [name]: { books: [], chapters: [], details: [], customGenres: [] } };
@@ -79,26 +179,14 @@ export default function App() {
     setCurrentLibrary(name);
     setBooks([]); setChapters([]); setDetails([]); setCustomGenres([]);
     localStorage.setItem('booknote_web_final', JSON.stringify(newDb));
-  };
-
-  const saveData = () => {
-    if (!databases) return;
-    const updatedDb = { ...databases, [currentLibrary]: { books, chapters, details, customGenres } };
-    setDatabases(updatedDb);
-    localStorage.setItem('booknote_web_final', JSON.stringify(updatedDb));
-
-    // 저장 피드백 (1초)
-    setIsSaved(true);
-    setTimeout(() => {
-      setIsSaved(false);
-    }, 1000);
+    const { error } = await supabase.from('booknote_saves').upsert({ id: SAVE_ID, data: newDb });
+    if (error) alert('클라우드 저장 실패. 네트워크를 확인해주세요.');
   };
 
   const loadLibrary = (owner) => {
-    // 전환 전, 현재 서재 상태를 메모리(state)에는 반영해두지만 로컬스토리지 저장은 안 함(수동 저장 원칙)
-    setDatabases(prev => ({ ...prev, [currentLibrary]: { books, chapters, details, customGenres } }));
-
-    const targetData = databases[owner];
+    const currentDb = { ...databasesRef.current, [currentLibraryRef.current]: { books, chapters, details, customGenres } };
+    setDatabases(currentDb);
+    const targetData = currentDb[owner];
     setCurrentLibrary(owner);
     setBooks(targetData.books || []);
     setChapters(targetData.chapters || []);
@@ -121,13 +209,10 @@ export default function App() {
 
   const confirmAddGenre = () => {
     const gName = newGenreName.trim();
-    if (gName && !customGenres.includes(gName)) {
-      setCustomGenres([...customGenres, gName]);
-    }
+    if (gName && !customGenres.includes(gName)) setCustomGenres([...customGenres, gName]);
     setNewGenreName(''); setShowAddGenre(false);
   };
 
-  // --- 검색 및 이동 ---
   useEffect(() => {
     if (!searchQuery.trim()) return setSearchResults([]);
     const q = searchQuery.toLowerCase();
@@ -149,29 +234,23 @@ export default function App() {
     }
   };
 
-  // --- 맞춤법 검사기 (UI 개선판) ---
   const getSpellCheckTarget = () => {
     if (viewMode === 'editor' && selectedDetail) return { obj: selectedDetail, type: 'detail' };
     return null;
   };
 
-  // 탭 열거나 대상 변경 시 내용 동기화
   useEffect(() => {
     if (sidebarTab === 'spell') {
       const targetData = getSpellCheckTarget();
-      if (targetData && targetData.obj) {
-        setSpellCorrection(targetData.obj.content || '');
-      } else {
-        setSpellCorrection('');
-      }
+      if (targetData && targetData.obj) setSpellCorrection(targetData.obj.content || '');
+      else setSpellCorrection('');
     }
-  }, [selectedDetail?.id, sidebarTab, viewMode]);
+  }, [selectedDetail?.id, sidebarTab, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRunSpellCheck = () => {
     if (!selectedDetail || !selectedDetail.content) return;
     setIsCheckingSpelling(true);
     setSpellMessage('');
-
     setTimeout(() => {
       let correctedText = selectedDetail.content;
       correctedText = correctedText.replace(/움지이고/g, '움직이고');
@@ -181,12 +260,8 @@ export default function App() {
       correctedText = correctedText.replace(/않돼/g, '안 돼');
       correctedText = correctedText.replace(/않해/g, '안 해');
       correctedText = correctedText.replace(/어떡해/g, '어떻게 해');
-
-      if (correctedText === selectedDetail.content) {
-        setSpellMessage('✅ 분석 완료: 발견된 오타가 없습니다!');
-      } else {
-        setSpellMessage('✨ 오타를 수정했습니다! 아래에서 확인 후 적용하세요.');
-      }
+      if (correctedText === selectedDetail.content) setSpellMessage('✅ 분석 완료: 발견된 오타가 없습니다!');
+      else setSpellMessage('✨ 오타를 수정했습니다! 아래에서 확인 후 적용하세요.');
       setSpellCorrection(correctedText);
       setIsCheckingSpelling(false);
     }, 1000);
@@ -197,25 +272,21 @@ export default function App() {
     const newObj = { ...selectedDetail, content: spellCorrection };
     setDetails(details.map(d => d.id === newObj.id ? newObj : d));
     setSelectedDetail(newObj);
-    setSpellMessage(`✅ 적용 완료!`);
+    setSpellMessage('✅ 적용 완료!');
     setTimeout(() => setSpellMessage(''), 3000);
   };
 
-  // --- 비디오 업데이트 ---
   const handleVideoUpdate = (url) => {
     let target = null;
     if (viewMode === 'editor') target = { obj: selectedDetail, setter: setSelectedDetail, listSetter: setDetails, list: details };
     else if (viewMode === 'details') target = { obj: selectedChapter, setter: setSelectedChapter, listSetter: setChapters, list: chapters };
     else if (viewMode === 'chapters') target = { obj: selectedBook, setter: setSelectedBook, listSetter: setBooks, list: books };
-
     if (!target || !target.obj) return;
     const newObj = { ...target.obj, videoUrl: url };
     target.setter(newObj);
     target.listSetter(target.list.map(item => item.id === newObj.id ? newObj : item));
   };
 
-
-  // --- 기본 핸들러들 ---
   useEffect(() => {
     const handleClickOutside = () => setContextMenu(null);
     window.addEventListener('click', handleClickOutside);
@@ -223,9 +294,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedBook) {
-      setLocalCategory(Array.isArray(selectedBook.category) ? selectedBook.category.join(', ') : (selectedBook.category || ''));
-    }
+    if (selectedBook) setLocalCategory(Array.isArray(selectedBook.category) ? selectedBook.category.join(', ') : (selectedBook.category || ''));
   }, [selectedBook?.id, selectedBook?.category]);
 
   const calculateProgress = (bookId) => {
@@ -247,11 +316,23 @@ export default function App() {
   const handleDeleteBook = (id) => { setBooks(books.filter(b => b.id !== id)); setContextMenu(null); setViewMode('shelf'); };
 
   const usedGenres = [...new Set([...customGenres, ...books.flatMap(b => Array.isArray(b.category) ? b.category : [b.category])])].filter(g => g && g !== '');
-
   const handleDragStart = (e, bookId) => { setDraggedBookId(bookId); e.dataTransfer.effectAllowed = "move"; };
   const handleDragOver = (e, genre) => { e.preventDefault(); if (dragOverGenre !== genre) setDragOverGenre(genre); };
   const handleDrop = (e, targetGenre) => { e.preventDefault(); setDragOverGenre(null); if (draggedBookId) { updateBook(draggedBookId, { category: [targetGenre] }); setDraggedBookId(null); } };
 
+  // --- 로딩 화면 ---
+  if (isAppLoading) {
+    return (
+      <div className={`flex items-center justify-center h-screen w-full ${currentTheme.bg} ${currentTheme.text} font-sans`}>
+        <div className="flex flex-col items-center gap-4">
+          <BookOpen size={48} className="text-blue-500 animate-pulse" />
+          <p className="font-bold opacity-60">클라우드 데이터 불러오는 중...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- 최초 설정 화면 ---
   if (!databases) {
     return (
       <div className={`flex items-center justify-center h-screen w-full ${currentTheme.bg} ${currentTheme.text} font-sans`}>
@@ -261,8 +342,9 @@ export default function App() {
         >
           <BookOpen size={64} className={`mx-auto mb-6 ${currentTheme.primary}`} />
           <h1 className="text-3xl font-black mb-2">BookNote</h1>
+          <p className="text-sm opacity-50 mb-2">☁️ 클라우드 서재</p>
           <input autoFocus value={setupName} onChange={(e) => setSetupName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleInitialSetup()} placeholder="서재 이름 입력 (예: 홍길동)" className="w-full p-4 rounded-xl border-2 mt-6 outline-none text-center bg-transparent" />
-          <button onClick={handleInitialSetup} className="w-full py-4 rounded-xl bg-blue-600 text-white font-bold mt-4 shadow-lg hover:bg-blue-700 transition">생성하기</button>
+          <button onClick={handleInitialSetup} className="w-full py-4 rounded-xl bg-blue-600 text-white font-bold mt-4 shadow-lg hover:bg-blue-700 transition">☁️ 클라우드 서재 생성하기</button>
         </motion.div>
       </div>
     );
@@ -274,13 +356,17 @@ export default function App() {
       <div className={`p-5 border-b ${currentTheme.border} flex flex-col gap-4`}>
         <div className="flex justify-between items-center">
           <h1 className={`text-xl font-black tracking-tighter flex items-center gap-2 ${currentTheme.primary}`}><BookOpen size={24} /> BookNote</h1>
-          {/* 수동 저장 버튼 */}
-          <button
-            onClick={saveData}
-            className={`flex items-center gap-1 text-white text-[11px] font-bold px-3 py-1.5 rounded-lg shadow-sm transition-all duration-300 ${isSaved ? 'bg-green-500 hover:bg-green-600' : 'bg-blue-600 hover:bg-blue-700'}`}
-          >
-            {isSaved ? <><Check size={14}/> 저장됨</> : <><Save size={14}/> 저장</>}
-          </button>
+          {/* 자동저장 상태 표시 */}
+          <div className={`flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all duration-300
+            ${isSaved === true ? 'bg-green-100 text-green-700'
+            : isSaved === 'saving' ? 'bg-blue-50 text-blue-500'
+            : isSaved === 'error' ? 'bg-red-100 text-red-600'
+            : 'bg-black/5 opacity-40'}`}>
+            {isSaved === true ? <><Check size={13}/> 저장됨</>
+            : isSaved === 'saving' ? <><Save size={13} className="animate-pulse"/> 저장 중...</>
+            : isSaved === 'error' ? <>⚠ 저장 실패</>
+            : <><Save size={13}/> 자동저장</>}
+          </div>
         </div>
         <div className="bg-black/5 p-3 rounded-xl border border-black/10">
           <div className="flex justify-between items-center mb-2">
@@ -302,19 +388,19 @@ export default function App() {
       <div className="flex-1 overflow-y-auto px-4 py-4 scrollbar-hide">
         {books.filter(b => !b.category || b.category.length === 0 || (b.category.length === 1 && b.category[0] === '')).length > 0 && (
           <div className="mb-4">
-             <div className="flex items-center gap-2 px-2 py-2 rounded-lg font-medium opacity-80 mb-1"><Folder size={18} className="text-gray-400" /> 미분류</div>
-             <div className="space-y-1">
-               {books.filter(b => !b.category || b.category.length === 0 || (b.category.length === 1 && b.category[0] === '')).map(book => {
-                 const progress = calculateProgress(book.id);
-                 return (
-                   <div key={book.id} onClick={() => { setSelectedBook(book); setViewMode('chapters'); }} draggable onDragStart={(e) => handleDragStart(e, book.id)} className={`flex items-center gap-2 px-2 py-2 ml-4 rounded-lg cursor-pointer hover:bg-black/5 text-sm ${selectedBook?.id === book.id ? 'bg-black/5 font-bold' : ''}`}>
-                     <Book size={16} className="shrink-0" />
-                     <span className="truncate flex-1">{book.title}</span>
-                     {progress === 100 && <span className="text-[10px] text-yellow-600 bg-yellow-100 px-1.5 py-0.5 rounded-full font-bold whitespace-nowrap">완독</span>}
-                   </div>
-                 );
-               })}
-             </div>
+            <div className="flex items-center gap-2 px-2 py-2 rounded-lg font-medium opacity-80 mb-1"><Folder size={18} className="text-gray-400" /> 미분류</div>
+            <div className="space-y-1">
+              {books.filter(b => !b.category || b.category.length === 0 || (b.category.length === 1 && b.category[0] === '')).map(book => {
+                const progress = calculateProgress(book.id);
+                return (
+                  <div key={book.id} onClick={() => { setSelectedBook(book); setViewMode('chapters'); }} draggable onDragStart={(e) => handleDragStart(e, book.id)} className={`flex items-center gap-2 px-2 py-2 ml-4 rounded-lg cursor-pointer hover:bg-black/5 text-sm ${selectedBook?.id === book.id ? 'bg-black/5 font-bold' : ''}`}>
+                    <Book size={16} className="shrink-0" />
+                    <span className="truncate flex-1">{book.title}</span>
+                    {progress === 100 && <span className="text-[10px] text-yellow-600 bg-yellow-100 px-1.5 py-0.5 rounded-full font-bold whitespace-nowrap">완독</span>}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
         {usedGenres.map(genre => (
@@ -368,7 +454,6 @@ export default function App() {
             </div>
           )}
         </div>
-
         <AnimatePresence>
           {sidebarTab && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 p-6 overflow-y-auto">
@@ -378,57 +463,36 @@ export default function App() {
                   <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="검색어 입력..." className={`w-full p-2 rounded border ${currentTheme.border} bg-transparent outline-none focus:ring-2 focus:ring-blue-500`} />
                   <div className="space-y-2">
                     {searchResults.length === 0 ? <p className="text-center opacity-50 text-xs py-4">결과가 없습니다.</p> : searchResults.map((res, i) => (
-                      <div key={i} onClick={() => handleSearchResultClick(res)} className={`p-3 rounded border bg-black/5 text-sm cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all`}>
-                        <div className="font-bold flex items-center gap-2"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full text-white bg-blue-500 shrink-0`}>{res.type}</span><span className="truncate">{res.title}</span><ExternalLink size={12} className="opacity-50"/></div>
+                      <div key={i} onClick={() => handleSearchResultClick(res)} className="p-3 rounded border bg-black/5 text-sm cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all">
+                        <div className="font-bold flex items-center gap-2"><span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white bg-blue-500 shrink-0">{res.type}</span><span className="truncate">{res.title}</span><ExternalLink size={12} className="opacity-50"/></div>
                         <div className="opacity-60 text-xs mt-1 truncate">{res.desc}</div>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-
-              {/* 2. 맞춤법 탭 */}
               {sidebarTab === 'spell' && (
                 <div className="space-y-4">
                   <h3 className="font-bold flex items-center gap-2"><CheckCircle size={18}/> 맞춤법 / 내용 교정</h3>
                   {spellMessage && <div className="bg-green-100 text-green-800 p-2 rounded text-xs font-bold">{spellMessage}</div>}
-
                   {viewMode === 'editor' && selectedDetail ? (
                     <div className="flex flex-col gap-4">
-                      <div className="text-xs font-bold text-center border-b pb-2 flex items-center justify-center gap-2">
-                        <Edit3 size={12}/> {selectedDetail.title} 교정 중
-                      </div>
-
+                      <div className="text-xs font-bold text-center border-b pb-2 flex items-center justify-center gap-2"><Edit3 size={12}/> {selectedDetail.title} 교정 중</div>
                       <div className="flex flex-col gap-1">
                         <span className="text-xs font-bold opacity-50 pl-1">원본 내용 (Original)</span>
-                        <div className="bg-black/5 p-3 rounded border border-black/10 text-sm max-h-32 overflow-y-auto whitespace-pre-wrap text-gray-500">
-                          {selectedDetail.content || "(내용이 비어있습니다)"}
-                        </div>
+                        <div className="bg-black/5 p-3 rounded border border-black/10 text-sm max-h-32 overflow-y-auto whitespace-pre-wrap text-gray-500">{selectedDetail.content || "(내용이 비어있습니다)"}</div>
                       </div>
-
                       <div className="flex justify-center my-1">
-                        <button
-                          onClick={handleRunSpellCheck}
-                          disabled={isCheckingSpelling || !selectedDetail.content}
-                          className="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 px-4 py-2 rounded-full text-xs font-bold transition-all disabled:opacity-50 shadow-sm"
-                        >
+                        <button onClick={handleRunSpellCheck} disabled={isCheckingSpelling || !selectedDetail.content} className="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 px-4 py-2 rounded-full text-xs font-bold transition-all disabled:opacity-50 shadow-sm">
                           {isCheckingSpelling ? <span className="animate-spin">⏳</span> : <Sparkles size={14}/>}
                           {isCheckingSpelling ? 'AI 분석 및 교정 중...' : '✨ 자동 맞춤법 검사 실행'}
                         </button>
                       </div>
-
                       <div className="flex justify-center opacity-30"><ArrowDown size={20}/></div>
-
                       <div className="flex flex-col gap-1">
                         <span className="text-xs font-bold opacity-100 text-blue-600 pl-1">수정할 내용 (Edit here)</span>
-                        <textarea
-                          value={spellCorrection}
-                          onChange={e=>setSpellCorrection(e.target.value)}
-                          className="w-full h-40 p-3 rounded border-2 border-blue-200 bg-white text-sm focus:border-blue-500 outline-none resize-none text-gray-900"
-                          placeholder="수정할 내용을 입력하세요..."
-                        ></textarea>
+                        <textarea value={spellCorrection} onChange={e=>setSpellCorrection(e.target.value)} className="w-full h-40 p-3 rounded border-2 border-blue-200 bg-white text-sm focus:border-blue-500 outline-none resize-none text-gray-900" placeholder="수정할 내용을 입력하세요..."></textarea>
                       </div>
-
                       <button onClick={applySpellCorrection} className="w-full bg-blue-600 text-white py-3 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md transition-colors">본문에 적용하기</button>
                     </div>
                   ) : (
@@ -436,8 +500,6 @@ export default function App() {
                   )}
                 </div>
               )}
-
-              {/* 3. 동영상 탭 */}
               {sidebarTab === 'video' && (
                 <div className="space-y-4">
                   <h3 className="font-bold flex items-center gap-2"><Video size={18}/> 동영상 링크 ({levelName})</h3>
@@ -445,10 +507,11 @@ export default function App() {
                     <>
                       <div className="text-xs opacity-60 mb-1">유튜브 링크를 입력하세요:</div>
                       <input type="text" value={currentVideoUrl} onChange={e=>handleVideoUpdate(e.target.value)} placeholder="https://youtube.com/watch?v=..." className="w-full p-2 rounded border bg-transparent text-xs outline-none focus:border-blue-500" />
-                      {getYoutubeId(currentVideoUrl) ? (
-                        <div className="relative aspect-video bg-black rounded shadow mt-2"><iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(currentVideoUrl)}`} frameBorder="0" allowFullScreen></iframe></div>
-                      ) : <div className="aspect-video bg-black/10 rounded flex items-center justify-center text-xs opacity-50 mt-2">표지 미리보기 없음</div>}
-                      <p className="text-[10px] opacity-50 mt-2">* 세부 항목의 경우, 글을 작성하는 에디터 화면 맨 아래에도 영상이 표시됩니다.</p>
+                      {getYoutubeId(currentVideoUrl)
+                        ? <div className="relative aspect-video bg-black rounded shadow mt-2"><iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(currentVideoUrl)}`} title="video" allowFullScreen></iframe></div>
+                        : <div className="aspect-video bg-black/10 rounded flex items-center justify-center text-xs opacity-50 mt-2">표지 미리보기 없음</div>
+                      }
+                      <p className="text-[10px] opacity-50 mt-2">* 세부 항목의 경우, 에디터 화면 맨 아래에도 영상이 표시됩니다.</p>
                     </>
                   ) : <p className="text-center opacity-50 text-xs">대상을 선택하세요</p>}
                 </div>
@@ -477,8 +540,6 @@ export default function App() {
 
         <div className="flex-1 overflow-y-auto p-8">
           <AnimatePresence mode="wait">
-
-            {/* 1. Shelf View */}
             {viewMode === 'shelf' && (
               <motion.div key="shelf" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-6xl mx-auto">
                 <h2 className="text-3xl font-black mb-8 flex items-center gap-2">{currentLibrary}의 도서 <span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{books.length}권</span></h2>
@@ -497,40 +558,31 @@ export default function App() {
                 </div>
               </motion.div>
             )}
-
-            {/* 2. Chapters View (개선됨: 진행률 표시) */}
             {viewMode === 'chapters' && selectedBook && (
               <motion.div key="chapters" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-4xl mx-auto">
                 <div className="mb-8 flex gap-8">
-                   <label className={`w-32 h-44 rounded-xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center cursor-pointer hover:opacity-70 overflow-hidden relative ${selectedBook.coverUrl?'':'bg-black/5'}`}>
-                     {selectedBook.coverUrl ? <img src={selectedBook.coverUrl} className="w-full h-full object-cover"/> : <span className="text-xs opacity-50 text-center p-2">표지 추가</span>}
-                     <input type="file" accept="image/*" className="hidden" onChange={e=>{if(e.target.files[0]) updateBook(selectedBook.id, {coverUrl: URL.createObjectURL(e.target.files[0])})}} />
-                   </label>
-                   <div className="flex-1">
-                     <div className="flex flex-col gap-2 mb-4">
-                       <div className="flex items-center gap-2">
-                         <h2 className="text-4xl font-black">{selectedBook.title}</h2>
-                         <button onClick={()=>setEditingBookId(selectedBook.id)} className="text-gray-400 hover:text-blue-500"><Edit3 size={20}/></button>
-                       </div>
-
-                       {/* 진행률 표시 추가 */}
-                       <div className="flex items-center gap-3">
-                         <div className="w-48 h-3 rounded-full bg-black/10 overflow-hidden">
-                           <div style={{width: `${calculateProgress(selectedBook.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div>
-                         </div>
-                         <span className={`text-lg font-bold ${currentTheme.primary}`}>{calculateProgress(selectedBook.id)}% 읽음</span>
-                         {calculateProgress(selectedBook.id) === 100 && (
-                           <span className="flex items-center gap-1 bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full text-xs font-bold"><Award size={14}/> 완독 달성!</span>
-                         )}
-                       </div>
-                     </div>
-
-                     <div className="space-y-2 text-sm opacity-80">
-                        <div className="flex items-center gap-2"><span>저자:</span><input value={selectedBook.author} onChange={e=>updateBook(selectedBook.id,{author:e.target.value})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-32"/></div>
-                        <div className="flex items-center gap-2"><span>장르:</span><input value={localCategory} onChange={e=>setLocalCategory(e.target.value)} onBlur={()=>{updateBook(selectedBook.id,{category:localCategory.split(',').map(s=>s.trim())})}} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-48" placeholder="예: 소설, 과학"/></div>
-                        <div className="flex items-center gap-2"><span>총 페이지:</span><input type="number" value={selectedBook.totalPages} onChange={e=>updateBook(selectedBook.id,{totalPages:parseInt(e.target.value)||0})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-16 font-bold"/>쪽</div>
-                     </div>
-                   </div>
+                  <label className={`w-32 h-44 rounded-xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center cursor-pointer hover:opacity-70 overflow-hidden relative ${selectedBook.coverUrl?'':'bg-black/5'}`}>
+                    {selectedBook.coverUrl ? <img src={selectedBook.coverUrl} className="w-full h-full object-cover" alt="cover"/> : <span className="text-xs opacity-50 text-center p-2">표지 추가</span>}
+                    <input type="file" accept="image/*" className="hidden" onChange={e=>{if(e.target.files[0]) updateBook(selectedBook.id, {coverUrl: URL.createObjectURL(e.target.files[0])})}} />
+                  </label>
+                  <div className="flex-1">
+                    <div className="flex flex-col gap-2 mb-4">
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-4xl font-black">{selectedBook.title}</h2>
+                        <button onClick={()=>setEditingBookId(selectedBook.id)} className="text-gray-400 hover:text-blue-500"><Edit3 size={20}/></button>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="w-48 h-3 rounded-full bg-black/10 overflow-hidden"><div style={{width: `${calculateProgress(selectedBook.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div></div>
+                        <span className={`text-lg font-bold ${currentTheme.primary}`}>{calculateProgress(selectedBook.id)}% 읽음</span>
+                        {calculateProgress(selectedBook.id) === 100 && <span className="flex items-center gap-1 bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full text-xs font-bold"><Award size={14}/> 완독 달성!</span>}
+                      </div>
+                    </div>
+                    <div className="space-y-2 text-sm opacity-80">
+                      <div className="flex items-center gap-2"><span>저자:</span><input value={selectedBook.author} onChange={e=>updateBook(selectedBook.id,{author:e.target.value})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-32"/></div>
+                      <div className="flex items-center gap-2"><span>장르:</span><input value={localCategory} onChange={e=>setLocalCategory(e.target.value)} onBlur={()=>{updateBook(selectedBook.id,{category:localCategory.split(',').map(s=>s.trim())})}} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-48" placeholder="예: 소설, 과학"/></div>
+                      <div className="flex items-center gap-2"><span>총 페이지:</span><input type="number" value={selectedBook.totalPages} onChange={e=>updateBook(selectedBook.id,{totalPages:parseInt(e.target.value)||0})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-16 font-bold"/>쪽</div>
+                    </div>
+                  </div>
                 </div>
                 <div className="space-y-3">
                   {chapters.filter(c => c.bookId === selectedBook.id).map(chapter => (
@@ -543,64 +595,41 @@ export default function App() {
                 </div>
               </motion.div>
             )}
-
-            {/* 3. Details View */}
             {viewMode === 'details' && selectedChapter && (
-               <motion.div key="details" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
-                  <div className="space-y-3">
-                    <h2 className="text-3xl font-black mb-6 flex items-center gap-2"><span className={currentTheme.primary}>#{selectedChapter.index}</span> <input value={selectedChapter.title} onChange={e=>{const n=e.target.value;setSelectedChapter({...selectedChapter,title:n});setChapters(chapters.map(c=>c.id===selectedChapter.id?{...c,title:n}:c))}} className="bg-transparent outline-none w-full"/></h2>
-                    {details.filter(d=>d.chapterId===selectedChapter.id).map(detail=>(
-                      <div key={detail.id} onClick={()=>{setSelectedDetail(detail);setViewMode('editor')}} className={`p-4 rounded-xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-md cursor-pointer flex justify-between`}>
-                        <span className="font-bold">{detail.title}</span><span className="text-xs opacity-50">{detail.startPage}-{detail.endPage}p</span>
-                      </div>
-                    ))}
-                    <button onClick={handleAddDetail} className={`w-full p-4 rounded-xl border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100 font-bold`}>+ 세부 노트 추가</button>
-                  </div>
-               </motion.div>
+              <motion.div key="details" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
+                <div className="space-y-3">
+                  <h2 className="text-3xl font-black mb-6 flex items-center gap-2"><span className={currentTheme.primary}>#{selectedChapter.index}</span> <input value={selectedChapter.title} onChange={e=>{const n=e.target.value;setSelectedChapter({...selectedChapter,title:n});setChapters(chapters.map(c=>c.id===selectedChapter.id?{...c,title:n}:c))}} className="bg-transparent outline-none w-full"/></h2>
+                  {details.filter(d=>d.chapterId===selectedChapter.id).map(detail=>(
+                    <div key={detail.id} onClick={()=>{setSelectedDetail(detail);setViewMode('editor')}} className={`p-4 rounded-xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-md cursor-pointer flex justify-between`}>
+                      <span className="font-bold">{detail.title}</span><span className="text-xs opacity-50">{detail.startPage}-{detail.endPage}p</span>
+                    </div>
+                  ))}
+                  <button onClick={handleAddDetail} className={`w-full p-4 rounded-xl border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100 font-bold`}>+ 세부 노트 추가</button>
+                </div>
+              </motion.div>
             )}
-
-            {/* 4. Editor View (페이지 입력 다크모드 개선) */}
             {viewMode === 'editor' && selectedDetail && (
-               <motion.div key="editor" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
-                 <div className={`flex-1 rounded-3xl border ${currentTheme.border} ${currentTheme.panel} p-8 flex flex-col gap-4 shadow-sm overflow-y-auto`}>
-
-                   {/* 페이지 입력 (다크모드 완벽 대응) */}
-                   <div className={`flex gap-4 text-sm items-center bg-black/5 p-2 rounded-lg w-fit ${theme === 'dark' ? 'text-white' : ''}`}>
-                     <span className="opacity-50 font-bold">PAGE:</span>
-                     <input
-                       value={selectedDetail.startPage}
-                       onChange={e=>{const v=parseInt(e.target.value)||0;setSelectedDetail({...selectedDetail,startPage:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,startPage:v}:d))}}
-                       className={`w-12 rounded border text-center outline-none focus:ring-2 focus:ring-blue-500 ${theme === 'dark' ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'}`}
-                     />
-                     <span className="opacity-50">~</span>
-                     <input
-                       value={selectedDetail.endPage}
-                       onChange={e=>{const v=parseInt(e.target.value)||0;setSelectedDetail({...selectedDetail,endPage:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,endPage:v}:d))}}
-                       className={`w-12 rounded border text-center outline-none focus:ring-2 focus:ring-blue-500 ${theme === 'dark' ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'}`}
-                     />
-                   </div>
-
-                   <input value={selectedDetail.title} onChange={e=>{const v=e.target.value;setSelectedDetail({...selectedDetail,title:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,title:v}:d))}} className="text-2xl font-black bg-transparent outline-none border-b border-transparent focus:border-gray-200 pb-2"/>
-
-                   <textarea
-                     value={selectedDetail.content}
-                     onChange={e=>{const v=e.target.value;setSelectedDetail({...selectedDetail,content:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,content:v}:d))}}
-                     className="min-h-[300px] bg-transparent outline-none resize-none leading-relaxed text-lg"
-                     placeholder="내용을 입력하세요..."
-                   />
-
-                   {selectedDetail.videoUrl && getYoutubeId(selectedDetail.videoUrl) && (
-                     <div className="mt-8 border-t pt-8">
-                       <h4 className="text-sm font-bold opacity-60 mb-4 flex items-center gap-2"><Video size={16}/> 관련 영상</h4>
-                       <div className="relative aspect-video rounded-2xl overflow-hidden shadow-lg bg-black">
-                         <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(selectedDetail.videoUrl)}`} frameBorder="0" allowFullScreen></iframe>
-                       </div>
-                     </div>
-                   )}
-                 </div>
-               </motion.div>
+              <motion.div key="editor" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
+                <div className={`flex-1 rounded-3xl border ${currentTheme.border} ${currentTheme.panel} p-8 flex flex-col gap-4 shadow-sm overflow-y-auto`}>
+                  <div className={`flex gap-4 text-sm items-center bg-black/5 p-2 rounded-lg w-fit ${theme === 'dark' ? 'text-white' : ''}`}>
+                    <span className="opacity-50 font-bold">PAGE:</span>
+                    <input value={selectedDetail.startPage} onChange={e=>{const v=parseInt(e.target.value)||0;setSelectedDetail({...selectedDetail,startPage:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,startPage:v}:d))}} className={`w-12 rounded border text-center outline-none focus:ring-2 focus:ring-blue-500 ${theme === 'dark' ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'}`}/>
+                    <span className="opacity-50">~</span>
+                    <input value={selectedDetail.endPage} onChange={e=>{const v=parseInt(e.target.value)||0;setSelectedDetail({...selectedDetail,endPage:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,endPage:v}:d))}} className={`w-12 rounded border text-center outline-none focus:ring-2 focus:ring-blue-500 ${theme === 'dark' ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'}`}/>
+                  </div>
+                  <input value={selectedDetail.title} onChange={e=>{const v=e.target.value;setSelectedDetail({...selectedDetail,title:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,title:v}:d))}} className="text-2xl font-black bg-transparent outline-none border-b border-transparent focus:border-gray-200 pb-2"/>
+                  <textarea value={selectedDetail.content} onChange={e=>{const v=e.target.value;setSelectedDetail({...selectedDetail,content:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,content:v}:d))}} className="min-h-[300px] bg-transparent outline-none resize-none leading-relaxed text-lg" placeholder="내용을 입력하세요..."/>
+                  {selectedDetail.videoUrl && getYoutubeId(selectedDetail.videoUrl) && (
+                    <div className="mt-8 border-t pt-8">
+                      <h4 className="text-sm font-bold opacity-60 mb-4 flex items-center gap-2"><Video size={16}/> 관련 영상</h4>
+                      <div className="relative aspect-video rounded-2xl overflow-hidden shadow-lg bg-black">
+                        <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(selectedDetail.videoUrl)}`} title="video" allowFullScreen></iframe>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
             )}
-
           </AnimatePresence>
         </div>
       </main>
