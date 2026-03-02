@@ -8,8 +8,6 @@ import {
 } from 'lucide-react';
 import { supabase } from './supabase';
 
-const SAVE_ID = 'main_save';
-
 const getYoutubeId = (url) => {
   if (!url) return null;
   const regExp = /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/)([^#\&\?]*).*/;
@@ -58,6 +56,15 @@ export default function App() {
   const [isSearchingBook, setIsSearchingBook] = useState(false);
   const [bookSearchError, setBookSearchError] = useState('');
 
+  // --- 인증 상태 ---
+  const [currentUser, setCurrentUser] = useState(null); // { id, displayName }
+  const [authMode, setAuthMode] = useState('login');     // 'login' | 'signup'
+  const [authName, setAuthName] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPw, setAuthConfirmPw] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
     dark: { bg: 'bg-gray-900', text: 'text-gray-100', panel: 'bg-gray-800', border: 'border-gray-700', primary: 'text-blue-400', primaryBg: 'bg-blue-500', primaryLight: 'bg-gray-800' },
@@ -71,72 +78,34 @@ export default function App() {
   // stale closure 방지: setTimeout 내부에서 항상 최신값 참조
   const databasesRef = useRef(databases);
   const currentLibraryRef = useRef(currentLibrary);
+  const currentUserRef = useRef(currentUser);
   useEffect(() => { databasesRef.current = databases; }, [databases]);
   useEffect(() => { currentLibraryRef.current = currentLibrary; }, [currentLibrary]);
+  useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
 
-  // --- 앱 시작 시 Supabase에서 데이터 불러오기 ---
+  // --- 앱 시작 시 저장된 세션 확인 ---
   useEffect(() => {
-    const loadFromCloud = async () => {
-      try {
-        const { data } = await supabase
-          .from('booknote_saves')
-          .select('data')
-          .eq('id', SAVE_ID)
-          .single();
-
-        if (data && data.data) {
-          const cloudDb = data.data;
-          const firstLib = Object.keys(cloudDb)[0];
-          setDatabases(cloudDb);
-          setCurrentLibrary(firstLib);
-          setBooks(cloudDb[firstLib].books || []);
-          setChapters(cloudDb[firstLib].chapters || []);
-          setDetails(cloudDb[firstLib].details || []);
-          setCustomGenres(cloudDb[firstLib].customGenres || []);
-          localStorage.setItem('booknote_web_final', JSON.stringify(cloudDb));
-        } else {
-          // 클라우드에 없으면 로컬 캐시 시도
-          const local = localStorage.getItem('booknote_web_final');
-          if (local) {
-            const localDb = JSON.parse(local);
-            const firstLib = Object.keys(localDb)[0];
-            setDatabases(localDb);
-            setCurrentLibrary(firstLib);
-            setBooks(localDb[firstLib].books || []);
-            setChapters(localDb[firstLib].chapters || []);
-            setDetails(localDb[firstLib].details || []);
-            setCustomGenres(localDb[firstLib].customGenres || []);
-          } else {
-            setDatabases(null);
-          }
+    const initApp = async () => {
+      const savedSession = localStorage.getItem('booknote_session');
+      if (savedSession) {
+        try {
+          const user = JSON.parse(savedSession);
+          setCurrentUser(user);
+          await loadUserData(user.id, user.displayName);
+        } catch {
+          localStorage.removeItem('booknote_session');
+          setIsAppLoading(false);
         }
-      } catch (err) {
-        console.error('클라우드 로딩 실패, 로컬 캐시 사용:', err);
-        const local = localStorage.getItem('booknote_web_final');
-        if (local) {
-          try {
-            const localDb = JSON.parse(local);
-            const firstLib = Object.keys(localDb)[0];
-            setDatabases(localDb);
-            setCurrentLibrary(firstLib);
-            setBooks(localDb[firstLib].books || []);
-            setChapters(localDb[firstLib].chapters || []);
-            setDetails(localDb[firstLib].details || []);
-            setCustomGenres(localDb[firstLib].customGenres || []);
-          } catch (e) { setDatabases(null); }
-        } else {
-          setDatabases(null);
-        }
-      } finally {
+      } else {
         setIsAppLoading(false);
       }
     };
-    loadFromCloud();
-  }, []);
+    initApp();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ★ 자동저장 effect (isInitialized effect보다 먼저 정의 → 초기 로드 시 건너뜀)
   useEffect(() => {
-    if (!isInitialized.current || !databasesRef.current) return;
+    if (!isInitialized.current || !databasesRef.current || !currentUserRef.current) return;
 
     setIsSaved('saving');
     clearTimeout(autoSaveTimerRef.current);
@@ -152,7 +121,7 @@ export default function App() {
 
       const { error } = await supabase
         .from('booknote_saves')
-        .upsert({ id: SAVE_ID, data: updatedDb });
+        .upsert({ id: currentUserRef.current?.id, data: updatedDb });
 
       if (!error) {
         setIsSaved(true);
@@ -174,6 +143,99 @@ export default function App() {
     }
   }, [isAppLoading]);
 
+  // --- 인증 함수들 ---
+
+  const hashPassword = async (pw) => {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw + '_bknote_salt_'));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  const loadUserData = async (userId, displayName) => {
+    try {
+      const { data } = await supabase.from('booknote_saves').select('data').eq('id', userId).single();
+      if (data?.data) {
+        const db = data.data;
+        const firstLib = Object.keys(db)[0];
+        setDatabases(db);
+        setCurrentLibrary(firstLib);
+        setBooks(db[firstLib].books || []);
+        setChapters(db[firstLib].chapters || []);
+        setDetails(db[firstLib].details || []);
+        setCustomGenres(db[firstLib].customGenres || []);
+        localStorage.setItem('booknote_web_final', JSON.stringify(db));
+      } else {
+        const newDb = { [displayName]: { books: [], chapters: [], details: [], customGenres: [] } };
+        await supabase.from('booknote_saves').upsert({ id: userId, data: newDb });
+        setDatabases(newDb);
+        setCurrentLibrary(displayName);
+        setBooks([]); setChapters([]); setDetails([]); setCustomGenres([]);
+        localStorage.setItem('booknote_web_final', JSON.stringify(newDb));
+      }
+    } catch (err) {
+      console.error('데이터 로딩 실패:', err);
+      setDatabases(null);
+    } finally {
+      setIsAppLoading(false);
+    }
+  };
+
+  const handleSignup = async () => {
+    const name = authName.trim();
+    if (!name || !authPassword) return setAuthError('이름과 비밀번호를 입력해주세요.');
+    if (authPassword !== authConfirmPw) return setAuthError('비밀번호가 일치하지 않습니다.');
+    if (authPassword.length < 4) return setAuthError('비밀번호는 4자 이상이어야 합니다.');
+    setIsAuthLoading(true); setAuthError('');
+    try {
+      const { data: existing } = await supabase.from('booknote_users').select('id').eq('id', name).maybeSingle();
+      if (existing) return setAuthError('이미 사용 중인 이름입니다. 다른 이름을 사용해주세요.');
+      const hash = await hashPassword(authPassword);
+      const { error } = await supabase.from('booknote_users').insert({ id: name, password_hash: hash, display_name: name });
+      if (error) throw error;
+      const user = { id: name, displayName: name };
+      setCurrentUser(user);
+      localStorage.setItem('booknote_session', JSON.stringify(user));
+      setIsAppLoading(true);
+      await loadUserData(name, name);
+    } catch (err) {
+      setAuthError('오류가 발생했습니다: ' + err.message);
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    const name = authName.trim();
+    if (!name || !authPassword) return setAuthError('이름과 비밀번호를 입력해주세요.');
+    setIsAuthLoading(true); setAuthError('');
+    try {
+      const { data: user, error } = await supabase.from('booknote_users').select('id, display_name, password_hash').eq('id', name).single();
+      if (error || !user) return setAuthError('존재하지 않는 계정입니다.');
+      const hash = await hashPassword(authPassword);
+      if (user.password_hash !== hash) return setAuthError('비밀번호가 올바르지 않습니다.');
+      const session = { id: user.id, displayName: user.display_name };
+      setCurrentUser(session);
+      localStorage.setItem('booknote_session', JSON.stringify(session));
+      setIsAppLoading(true);
+      await loadUserData(user.id, user.display_name);
+    } catch (err) {
+      setAuthError('로그인 오류: ' + err.message);
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('booknote_session');
+    localStorage.removeItem('booknote_web_final');
+    setCurrentUser(null);
+    setDatabases(null);
+    setCurrentLibrary('');
+    setBooks([]); setChapters([]); setDetails([]); setCustomGenres([]);
+    setSelectedBook(null); setViewMode('shelf');
+    setAuthName(''); setAuthPassword(''); setAuthConfirmPw(''); setAuthError('');
+    setAuthMode('login');
+  };
+
   // --- 로직 ---
 
   const handleInitialSetup = async () => {
@@ -184,7 +246,7 @@ export default function App() {
     setCurrentLibrary(name);
     setBooks([]); setChapters([]); setDetails([]); setCustomGenres([]);
     localStorage.setItem('booknote_web_final', JSON.stringify(newDb));
-    const { error } = await supabase.from('booknote_saves').upsert({ id: SAVE_ID, data: newDb });
+    const { error } = await supabase.from('booknote_saves').upsert({ id: currentUserRef.current?.id, data: newDb });
     if (error) alert('클라우드 저장 실패. 네트워크를 확인해주세요.');
   };
 
@@ -430,7 +492,7 @@ export default function App() {
     setViewMode('shelf');
     setSelectedBook(null);
     localStorage.setItem('booknote_web_final', JSON.stringify(newDb));
-    supabase.from('booknote_saves').upsert({ id: SAVE_ID, data: newDb });
+    supabase.from('booknote_saves').upsert({ id: currentUserRef.current?.id, data: newDb });
   };
 
   const usedGenres = [...new Set([...customGenres, ...books.flatMap(b => Array.isArray(b.category) ? b.category : [b.category])])].filter(g => g && g !== '');
@@ -450,19 +512,76 @@ export default function App() {
     );
   }
 
-  // --- 최초 설정 화면 ---
-  if (!databases) {
+  // --- 로그인 / 회원가입 화면 ---
+  if (!currentUser) {
+    const isSignup = authMode === 'signup';
     return (
       <div className={`flex items-center justify-center h-screen w-full ${currentTheme.bg} ${currentTheme.text} font-sans`}>
         <motion.div
-          initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-          className={`p-10 rounded-3xl shadow-2xl ${currentTheme.panel} border ${currentTheme.border} text-center max-w-md w-full`}
+          key={authMode}
+          initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+          className={`p-10 rounded-3xl shadow-2xl ${currentTheme.panel} border ${currentTheme.border} w-full max-w-sm mx-4`}
         >
-          <BookOpen size={64} className={`mx-auto mb-6 ${currentTheme.primary}`} />
-          <h1 className="text-3xl font-black mb-2">BookNote</h1>
-          <p className="text-sm opacity-50 mb-2">☁️ 클라우드 서재</p>
-          <input autoFocus value={setupName} onChange={(e) => setSetupName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleInitialSetup()} placeholder="서재 이름 입력 (예: 홍길동)" className="w-full p-4 rounded-xl border-2 mt-6 outline-none text-center bg-transparent" />
-          <button onClick={handleInitialSetup} className="w-full py-4 rounded-xl bg-blue-600 text-white font-bold mt-4 shadow-lg hover:bg-blue-700 transition">☁️ 클라우드 서재 생성하기</button>
+          <div className="text-center mb-8">
+            <BookOpen size={48} className={`mx-auto mb-3 ${currentTheme.primary}`} />
+            <h1 className="text-2xl font-black">BookNote</h1>
+            <p className="text-xs opacity-40 mt-1">☁️ 나만의 클라우드 서재</p>
+          </div>
+
+          <div className={`flex rounded-xl overflow-hidden border-2 mb-6 ${currentTheme.border}`}>
+            <button onClick={() => { setAuthMode('login'); setAuthError(''); }} className={`flex-1 py-2.5 text-sm font-bold transition-colors ${!isSignup ? `${currentTheme.primaryBg} text-white` : `${currentTheme.text} opacity-60 hover:opacity-100`}`}>로그인</button>
+            <button onClick={() => { setAuthMode('signup'); setAuthError(''); }} className={`flex-1 py-2.5 text-sm font-bold transition-colors ${isSignup ? `${currentTheme.primaryBg} text-white` : `${currentTheme.text} opacity-60 hover:opacity-100`}`}>회원가입</button>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-bold opacity-60 mb-1 block">이름</label>
+              <input
+                autoFocus
+                value={authName}
+                onChange={e => { setAuthName(e.target.value); setAuthError(''); }}
+                onKeyDown={e => e.key === 'Enter' && (isSignup ? handleSignup() : handleLogin())}
+                placeholder="이름을 입력하세요"
+                className={`w-full p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold opacity-60 mb-1 block">비밀번호</label>
+              <input
+                type="password"
+                value={authPassword}
+                onChange={e => { setAuthPassword(e.target.value); setAuthError(''); }}
+                onKeyDown={e => e.key === 'Enter' && (isSignup ? handleSignup() : handleLogin())}
+                placeholder="비밀번호 (4자 이상)"
+                className={`w-full p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
+              />
+            </div>
+            {isSignup && (
+              <div>
+                <label className="text-xs font-bold opacity-60 mb-1 block">비밀번호 확인</label>
+                <input
+                  type="password"
+                  value={authConfirmPw}
+                  onChange={e => { setAuthConfirmPw(e.target.value); setAuthError(''); }}
+                  onKeyDown={e => e.key === 'Enter' && handleSignup()}
+                  placeholder="비밀번호를 다시 입력하세요"
+                  className={`w-full p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
+                />
+              </div>
+            )}
+          </div>
+
+          {authError && (
+            <div className="mt-3 text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">{authError}</div>
+          )}
+
+          <button
+            onClick={isSignup ? handleSignup : handleLogin}
+            disabled={isAuthLoading}
+            className={`w-full mt-5 py-3 rounded-xl ${currentTheme.primaryBg} text-white font-bold shadow hover:opacity-90 transition-opacity disabled:opacity-50`}
+          >
+            {isAuthLoading ? '처리 중...' : isSignup ? '회원가입' : '로그인'}
+          </button>
         </motion.div>
       </div>
     );
@@ -474,16 +593,22 @@ export default function App() {
       <div className={`p-5 border-b ${currentTheme.border} flex flex-col gap-4`}>
         <div className="flex justify-between items-center">
           <h1 className={`text-xl font-black tracking-tighter flex items-center gap-2 ${currentTheme.primary}`}><BookOpen size={24} /> BookNote</h1>
-          {/* 자동저장 상태 표시 */}
-          <div className={`flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all duration-300
-            ${isSaved === true ? 'bg-green-100 text-green-700'
-            : isSaved === 'saving' ? 'bg-blue-50 text-blue-500'
-            : isSaved === 'error' ? 'bg-red-100 text-red-600'
-            : 'bg-black/5 opacity-40'}`}>
-            {isSaved === true ? <><Check size={13}/> 저장됨</>
-            : isSaved === 'saving' ? <><Save size={13} className="animate-pulse"/> 저장 중...</>
-            : isSaved === 'error' ? <>⚠ 저장 실패</>
-            : <><Save size={13}/> 자동저장</>}
+          <div className="flex items-center gap-1">
+            {/* 자동저장 상태 표시 */}
+            <div className={`flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all duration-300
+              ${isSaved === true ? 'bg-green-100 text-green-700'
+              : isSaved === 'saving' ? 'bg-blue-50 text-blue-500'
+              : isSaved === 'error' ? 'bg-red-100 text-red-600'
+              : 'bg-black/5 opacity-40'}`}>
+              {isSaved === true ? <><Check size={13}/> 저장됨</>
+              : isSaved === 'saving' ? <><Save size={13} className="animate-pulse"/> 저장 중...</>
+              : isSaved === 'error' ? <>⚠ 저장 실패</>
+              : <><Save size={13}/> 자동저장</>}
+            </div>
+            {/* 로그아웃 버튼 */}
+            <button onClick={handleLogout} title="로그아웃" className="text-[11px] font-bold px-2 py-1.5 rounded-lg bg-black/5 opacity-40 hover:opacity-100 hover:bg-red-100 hover:text-red-600 transition-all">
+              나가기
+            </button>
           </div>
         </div>
         <div className="bg-black/5 p-3 rounded-xl border border-black/10">
