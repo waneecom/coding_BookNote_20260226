@@ -2,9 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Book, Folder, ChevronRight, Search, CheckCircle, Video,
-  Plus, MoreVertical, Moon, Sun, BookOpen,
+  Plus, Moon, Sun, BookOpen,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
-  Users, Save, ExternalLink, ArrowDown, Award, Sparkles
+  Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2
 } from 'lucide-react';
 import { supabase } from './supabase';
 
@@ -52,6 +52,11 @@ export default function App() {
   const [newGenreName, setNewGenreName] = useState('');
   const [draggedBookId, setDraggedBookId] = useState(null);
   const [dragOverGenre, setDragOverGenre] = useState(null);
+  const [showBookSearch, setShowBookSearch] = useState(false);
+  const [bookSearchQuery, setBookSearchQuery] = useState('');
+  const [bookSearchResults, setBookSearchResults] = useState([]);
+  const [isSearchingBook, setIsSearchingBook] = useState(false);
+  const [bookSearchError, setBookSearchError] = useState('');
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -309,11 +314,124 @@ export default function App() {
 
   const handleContextMenu = (e, book) => { e.preventDefault(); setContextMenu({ x: e.pageX, y: e.pageY, book }); };
   const updateBook = (id, updates) => { setBooks(books.map(b => b.id === id ? { ...b, ...updates } : b)); if (selectedBook?.id === id) setSelectedBook({ ...selectedBook, ...updates }); };
-  const handleAddBook = () => { const newBook = { id: Date.now(), title: '새로운 책', author: '', totalPages: 300, status: '대기 중', category: [], coverUrl: '', videoUrl: '' }; setBooks([...books, newBook]); setEditingBookId(newBook.id); };
+  const handleAddBook = () => { setShowBookSearch(true); setBookSearchQuery(''); setBookSearchResults([]); setBookSearchError(''); };
+
+  const handleSearchBook = async (query) => {
+    if (!query.trim()) return;
+    setIsSearchingBook(true);
+    setBookSearchResults([]);
+    setBookSearchError('');
+    try {
+      const kakaoKey = process.env.REACT_APP_KAKAO_API_KEY;
+      if (!kakaoKey || kakaoKey === '여기에_REST_API_키_붙여넣기') {
+        throw new Error('카카오 API 키가 설정되지 않았습니다.');
+      }
+      // 카카오 도서 검색 API
+      const res = await fetch(
+        `https://dapi.kakao.com/v3/search/book?query=${encodeURIComponent(query)}&size=10`,
+        { headers: { Authorization: `KakaoAK ${kakaoKey}` } }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // 카카오 응답을 내부 포맷으로 변환
+      const items = (data.documents || []).map((doc, i) => ({
+        id: doc.isbn || String(i),
+        volumeInfo: {
+          title: doc.title,
+          authors: doc.authors || [],
+          translators: doc.translators || [],
+          pageCount: null, // 카카오 API는 페이지 수 미제공
+          imageLinks: doc.thumbnail ? { thumbnail: doc.thumbnail } : null,
+          publishedDate: doc.datetime?.slice(0, 10) || '',
+          publisher: doc.publisher || '',
+          contents: doc.contents || '',
+          salePrice: doc.sale_price || 0,
+          url: doc.url || ''
+        }
+      }));
+      setBookSearchResults(items);
+      if (items.length === 0) setBookSearchError('검색 결과가 없습니다. 다른 검색어를 입력해보세요.');
+    } catch (err) {
+      console.error('카카오 책 검색 실패:', err);
+      if (err.message.includes('API 키')) {
+        setBookSearchError('.env.local 파일에 REACT_APP_KAKAO_API_KEY를 설정해주세요.');
+      } else {
+        setBookSearchError(`검색 오류: ${err.message}`);
+      }
+    } finally {
+      setIsSearchingBook(false);
+    }
+  };
+
+  const handleSelectBookFromSearch = (item) => {
+    const info = item.volumeInfo;
+    const newBook = {
+      id: Date.now(),
+      title: info.title || '새로운 책',
+      author: (info.authors || []).join(', '),
+      totalPages: info.pageCount || 300,
+      status: '대기 중',
+      category: [],
+      coverUrl: info.imageLinks?.thumbnail?.replace('http://', 'https://') || '',
+      videoUrl: '',
+      publisher: info.publisher || '',
+      publishedDate: info.publishedDate || '',
+      contents: info.contents || '',
+      salePrice: info.salePrice || 0,
+      url: info.url || ''
+    };
+    setBooks([...books, newBook]);
+    setShowBookSearch(false); setBookSearchQuery(''); setBookSearchResults([]);
+    setSelectedBook(newBook); setViewMode('chapters');
+  };
+
+  const handleAddBookManually = () => { const newBook = { id: Date.now(), title: '새로운 책', author: '', totalPages: 300, status: '대기 중', category: [], coverUrl: '', videoUrl: '' }; setBooks([...books, newBook]); setShowBookSearch(false); setEditingBookId(newBook.id); };
   const handleAddChapter = () => { if (!selectedBook) return; const next = chapters.filter(c => c.bookId === selectedBook.id).length + 1; setChapters([...chapters, { id: Date.now(), bookId: selectedBook.id, index: next.toString(), title: `새로운 챕터 ${next}`, videoUrl: '' }]); };
   const handleAddDetail = () => { if (!selectedChapter) return; const next = details.filter(d => d.chapterId === selectedChapter.id).length + 1; setDetails([...details, { id: Date.now(), chapterId: selectedChapter.id, index: next.toString(), title: `세부 항목 ${next}`, startPage: 1, endPage: 10, content: '', videoUrl: '' }]); };
   const handleRename = (id, newName) => { setBooks(books.map(b => b.id === id ? { ...b, title: newName } : b)); setEditingBookId(null); };
-  const handleDeleteBook = (id) => { setBooks(books.filter(b => b.id !== id)); setContextMenu(null); setViewMode('shelf'); };
+  const handleDeleteBook = (id) => {
+    const bookChapterIds = chapters.filter(c => c.bookId === id).map(c => c.id);
+    setBooks(books.filter(b => b.id !== id));
+    setChapters(chapters.filter(c => c.bookId !== id));
+    setDetails(details.filter(d => !bookChapterIds.includes(d.chapterId)));
+    setContextMenu(null);
+    setSelectedBook(null);
+    setViewMode('shelf');
+  };
+
+  const handleDeleteChapter = (e, id) => {
+    e.stopPropagation();
+    if (!window.confirm('이 챕터와 모든 세부 노트를 삭제하시겠습니까?')) return;
+    setChapters(chapters.filter(c => c.id !== id));
+    setDetails(details.filter(d => d.chapterId !== id));
+    if (selectedChapter?.id === id) { setSelectedChapter(null); setViewMode('chapters'); }
+  };
+
+  const handleDeleteDetail = (e, id) => {
+    e.stopPropagation();
+    if (!window.confirm('이 세부 노트를 삭제하시겠습니까?')) return;
+    setDetails(details.filter(d => d.id !== id));
+    if (selectedDetail?.id === id) { setSelectedDetail(null); setViewMode('details'); }
+  };
+
+  const handleDeleteLibrary = () => {
+    const owners = Object.keys(databases);
+    if (owners.length <= 1) return alert('마지막 서재는 삭제할 수 없습니다.');
+    if (!window.confirm(`"${currentLibrary}" 서재를 삭제하시겠습니까?\n(모든 책과 노트가 삭제됩니다)`)) return;
+    const newDb = { ...databases };
+    delete newDb[currentLibrary];
+    const nextOwner = Object.keys(newDb)[0];
+    setDatabases(newDb);
+    setCurrentLibrary(nextOwner);
+    setBooks(newDb[nextOwner].books || []);
+    setChapters(newDb[nextOwner].chapters || []);
+    setDetails(newDb[nextOwner].details || []);
+    setCustomGenres(newDb[nextOwner].customGenres || []);
+    setViewMode('shelf');
+    setSelectedBook(null);
+    localStorage.setItem('booknote_web_final', JSON.stringify(newDb));
+    supabase.from('booknote_saves').upsert({ id: SAVE_ID, data: newDb });
+  };
 
   const usedGenres = [...new Set([...customGenres, ...books.flatMap(b => Array.isArray(b.category) ? b.category : [b.category])])].filter(g => g && g !== '');
   const handleDragStart = (e, bookId) => { setDraggedBookId(bookId); e.dataTransfer.effectAllowed = "move"; };
@@ -371,7 +489,10 @@ export default function App() {
         <div className="bg-black/5 p-3 rounded-xl border border-black/10">
           <div className="flex justify-between items-center mb-2">
             <label className="text-xs font-bold uppercase tracking-widest opacity-60 flex items-center gap-1"><Users size={12}/> 서재</label>
-            <button onClick={() => { setShowAddUser(true); setNewUserName(''); }} className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded font-bold hover:bg-blue-200">+ 추가</button>
+            <div className="flex gap-1">
+              <button onClick={() => { setShowAddUser(true); setNewUserName(''); }} className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded font-bold hover:bg-blue-200">+ 추가</button>
+              {Object.keys(databases).length > 1 && <button onClick={handleDeleteLibrary} className="text-[10px] bg-red-100 text-red-500 px-1.5 py-0.5 rounded font-bold hover:bg-red-200" title="서재 삭제"><Trash2 size={10}/></button>}
+            </div>
           </div>
           {showAddUser ? (
             <div className="flex flex-col gap-2">
@@ -542,16 +663,25 @@ export default function App() {
           <AnimatePresence mode="wait">
             {viewMode === 'shelf' && (
               <motion.div key="shelf" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-6xl mx-auto">
-                <h2 className="text-3xl font-black mb-8 flex items-center gap-2">{currentLibrary}의 도서 <span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{books.length}권</span></h2>
+                <h2 className="text-3xl font-black mb-8 flex items-center gap-2">{currentLibrary} 님의 도서 <span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{books.length}권</span></h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {books.map(book => (
                     <motion.div key={book.id} onClick={() => { setSelectedBook(book); setViewMode('chapters'); }} onContextMenu={e => handleContextMenu(e, book)} className={`relative p-6 rounded-3xl border ${currentTheme.border} ${currentTheme.panel} shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all cursor-pointer group flex flex-col h-64`}>
-                      <div className="flex justify-between items-start mb-4"><span className={`text-[10px] font-bold px-2 py-1 rounded-full ${book.status==='읽는 중'?'bg-blue-100 text-blue-600':'bg-black/5'}`}>{book.status}</span><MoreVertical size={16} className="opacity-0 group-hover:opacity-50" /></div>
+                      <div className="flex justify-between items-start mb-4">
+                        <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${book.status==='읽는 중'?'bg-blue-100 text-blue-600':'bg-black/5'}`}>{book.status}</span>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={(e)=>{e.stopPropagation();setEditingBookId(book.id)}} className="p-1 text-gray-400 hover:text-blue-500" title="이름 변경"><Edit3 size={14}/></button>
+                          <button onClick={(e)=>{e.stopPropagation();if(window.confirm(`"${book.title}"을 삭제하시겠습니까?`))handleDeleteBook(book.id);}} className="p-1 text-gray-400 hover:text-red-500" title="삭제"><Trash2 size={14}/></button>
+                        </div>
+                      </div>
                       <div className="flex-1">
                         {editingBookId === book.id ? <input autoFocus defaultValue={book.title} onClick={e=>e.stopPropagation()} onBlur={e=>handleRename(book.id, e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleRename(book.id, e.target.value)} className="text-2xl font-black w-full bg-transparent border-b-2 border-blue-500 outline-none"/> : <div className="flex items-center gap-2 group/edit"><h3 className="text-2xl font-black line-clamp-2">{book.title}</h3><button onClick={(e)=>{e.stopPropagation();setEditingBookId(book.id)}} className="opacity-0 group-hover/edit:opacity-100 text-gray-400 hover:text-blue-500"><Edit3 size={16}/></button></div>}
                         <p className="mt-2 text-sm opacity-60">{book.author || '저자 미상'} · {book.totalPages}p</p>
                       </div>
-                      <div className="w-full h-1.5 bg-black/10 rounded-full overflow-hidden mt-4"><div style={{width: `${calculateProgress(book.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div></div>
+                      <div className="mt-4">
+                        <div className="flex justify-between items-center mb-1"><span className="text-xs opacity-50">진행률</span><span className={`text-xs font-bold ${currentTheme.primary}`}>{calculateProgress(book.id)}%</span></div>
+                        <div className="w-full h-1.5 bg-black/10 rounded-full overflow-hidden"><div style={{width: `${calculateProgress(book.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div></div>
+                      </div>
                     </motion.div>
                   ))}
                   <button onClick={handleAddBook} className={`h-64 rounded-3xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center opacity-50 hover:opacity-100 hover:border-blue-500 hover:text-blue-500 transition-all gap-2`}><Plus size={32}/><span className="font-bold">새로운 책 추가</span></button>
@@ -570,6 +700,7 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <h2 className="text-4xl font-black">{selectedBook.title}</h2>
                         <button onClick={()=>setEditingBookId(selectedBook.id)} className="text-gray-400 hover:text-blue-500"><Edit3 size={20}/></button>
+                        <button onClick={()=>{ if(window.confirm(`"${selectedBook.title}"을 삭제하시겠습니까?\n(모든 챕터와 노트가 삭제됩니다)`)) handleDeleteBook(selectedBook.id); }} className="text-gray-400 hover:text-red-500"><Trash2 size={18}/></button>
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="w-48 h-3 rounded-full bg-black/10 overflow-hidden"><div style={{width: `${calculateProgress(selectedBook.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div></div>
@@ -581,14 +712,27 @@ export default function App() {
                       <div className="flex items-center gap-2"><span>저자:</span><input value={selectedBook.author} onChange={e=>updateBook(selectedBook.id,{author:e.target.value})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-32"/></div>
                       <div className="flex items-center gap-2"><span>장르:</span><input value={localCategory} onChange={e=>setLocalCategory(e.target.value)} onBlur={()=>{updateBook(selectedBook.id,{category:localCategory.split(',').map(s=>s.trim())})}} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-48" placeholder="예: 소설, 과학"/></div>
                       <div className="flex items-center gap-2"><span>총 페이지:</span><input type="number" value={selectedBook.totalPages} onChange={e=>updateBook(selectedBook.id,{totalPages:parseInt(e.target.value)||0})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-16 font-bold"/>쪽</div>
+                      {selectedBook.publisher && <div className="flex items-center gap-2"><span>출판사:</span><span className="font-medium">{selectedBook.publisher}</span></div>}
+                      {selectedBook.publishedDate && <div className="flex items-center gap-2"><span>출판일:</span><span className="font-medium">{selectedBook.publishedDate}</span></div>}
+                      {selectedBook.salePrice > 0 && <div className="flex items-center gap-2"><span>판매가:</span><span className={`font-bold ${currentTheme.primary}`}>{selectedBook.salePrice.toLocaleString()}원</span></div>}
+                      {selectedBook.url && <div className="flex items-center gap-2"><span>링크:</span><a href={selectedBook.url} target="_blank" rel="noopener noreferrer" className={`${currentTheme.primary} hover:underline flex items-center gap-1`}>도서 정보 보기 <ExternalLink size={12}/></a></div>}
                     </div>
                   </div>
                 </div>
+                {selectedBook.contents && (
+                  <div className={`mb-6 p-4 rounded-2xl ${currentTheme.primaryLight} text-sm leading-relaxed`}>
+                    <div className={`text-xs font-bold mb-1.5 ${currentTheme.primary} opacity-70`}>도서 소개</div>
+                    <p className="opacity-70">{selectedBook.contents}</p>
+                  </div>
+                )}
                 <div className="space-y-3">
                   {chapters.filter(c => c.bookId === selectedBook.id).map(chapter => (
-                    <motion.div key={chapter.id} onClick={() => { setSelectedChapter(chapter); setViewMode('details'); }} className={`p-5 rounded-2xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-lg transition-all cursor-pointer flex items-center justify-between`}>
+                    <motion.div key={chapter.id} onClick={() => { setSelectedChapter(chapter); setViewMode('details'); }} className={`p-5 rounded-2xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-lg transition-all cursor-pointer flex items-center justify-between group`}>
                       <div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-lg flex items-center justify-center font-black ${currentTheme.primaryLight} ${currentTheme.primary}`}>{chapter.index}</div><span className="font-bold text-lg">{chapter.title}</span></div>
-                      <ChevronRight size={20} className="opacity-30"/>
+                      <div className="flex items-center gap-2">
+                        <button onClick={(e) => handleDeleteChapter(e, chapter.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={16}/></button>
+                        <ChevronRight size={20} className="opacity-30"/>
+                      </div>
                     </motion.div>
                   ))}
                   <button onClick={handleAddChapter} className={`w-full p-4 rounded-2xl border-2 border-dashed ${currentTheme.border} text-center opacity-50 hover:opacity-100 font-bold`}>+ 챕터 추가</button>
@@ -600,8 +744,12 @@ export default function App() {
                 <div className="space-y-3">
                   <h2 className="text-3xl font-black mb-6 flex items-center gap-2"><span className={currentTheme.primary}>#{selectedChapter.index}</span> <input value={selectedChapter.title} onChange={e=>{const n=e.target.value;setSelectedChapter({...selectedChapter,title:n});setChapters(chapters.map(c=>c.id===selectedChapter.id?{...c,title:n}:c))}} className="bg-transparent outline-none w-full"/></h2>
                   {details.filter(d=>d.chapterId===selectedChapter.id).map(detail=>(
-                    <div key={detail.id} onClick={()=>{setSelectedDetail(detail);setViewMode('editor')}} className={`p-4 rounded-xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-md cursor-pointer flex justify-between`}>
-                      <span className="font-bold">{detail.title}</span><span className="text-xs opacity-50">{detail.startPage}-{detail.endPage}p</span>
+                    <div key={detail.id} onClick={()=>{setSelectedDetail(detail);setViewMode('editor')}} className={`p-4 rounded-xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-md cursor-pointer flex justify-between items-center group`}>
+                      <span className="font-bold">{detail.title}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs opacity-50">{detail.startPage}-{detail.endPage}p</span>
+                        <button onClick={(e) => handleDeleteDetail(e, detail.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={15}/></button>
+                      </div>
                     </div>
                   ))}
                   <button onClick={handleAddDetail} className={`w-full p-4 rounded-xl border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100 font-bold`}>+ 세부 노트 추가</button>
@@ -635,6 +783,73 @@ export default function App() {
       </main>
 
       {renderUtilityPanel()}
+      {showBookSearch && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setShowBookSearch(false)}>
+          <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl p-8 w-full max-w-xl mx-4`} onClick={e => e.stopPropagation()}>
+            <h2 className="text-2xl font-black mb-1 flex items-center gap-2"><Search size={22}/> 책 검색</h2>
+            <p className="text-xs opacity-50 mb-5">제목 또는 저자를 입력하면 자동으로 정보를 가져옵니다.</p>
+            <div className="flex gap-2 mb-5">
+              <input
+                autoFocus
+                value={bookSearchQuery}
+                onChange={e => setBookSearchQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSearchBook(bookSearchQuery)}
+                placeholder="예: 해리포터, 조앤 롤링..."
+                className={`flex-1 p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-500`}
+              />
+              <button onClick={() => handleSearchBook(bookSearchQuery)} className="bg-blue-600 text-white px-5 py-3 rounded-xl font-bold hover:bg-blue-700 transition-colors">
+                검색
+              </button>
+            </div>
+            {isSearchingBook && <div className="text-center py-6 text-blue-500 font-bold animate-pulse">🔍 검색 중...</div>}
+            {!isSearchingBook && bookSearchError && (
+              <div className="text-center py-4 text-sm opacity-70 bg-black/5 rounded-xl px-4">{bookSearchError}</div>
+            )}
+            <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
+              {bookSearchResults.map(item => (
+                <div key={item.id} className={`flex gap-3 p-3 rounded-xl border ${currentTheme.border} hover:border-blue-400 transition-all relative`}>
+                  {/* 표지 이미지 */}
+                  <div className="shrink-0 cursor-pointer" onClick={() => handleSelectBookFromSearch(item)}>
+                    {item.volumeInfo.imageLinks?.thumbnail
+                      ? <img src={item.volumeInfo.imageLinks.thumbnail.replace('http://', 'https://')} alt="cover" className="w-16 h-[90px] object-cover rounded shadow-sm"/>
+                      : <div className="w-16 h-[90px] bg-black/10 rounded flex items-center justify-center"><Book size={22} className="opacity-40"/></div>
+                    }
+                  </div>
+                  {/* 도서 정보 */}
+                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => handleSelectBookFromSearch(item)}>
+                    <div className="font-bold text-sm leading-snug mb-0.5">{item.volumeInfo.title}</div>
+                    <div className="text-xs opacity-60">
+                      {(item.volumeInfo.authors || []).join(', ')}
+                      {item.volumeInfo.translators?.length > 0 && ` · 번역: ${item.volumeInfo.translators.join(', ')}`}
+                    </div>
+                    {item.volumeInfo.contents && (
+                      <div className="text-xs opacity-50 mt-1.5 leading-relaxed" style={{display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
+                        {item.volumeInfo.contents}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1.5 text-xs opacity-50">
+                      {item.volumeInfo.publisher && <span>{item.volumeInfo.publisher}</span>}
+                      {item.volumeInfo.publishedDate && <span>{item.volumeInfo.publishedDate}</span>}
+                      {item.volumeInfo.salePrice > 0 && (
+                        <span className={`font-bold ${currentTheme.primary}`}>{item.volumeInfo.salePrice.toLocaleString()}원</span>
+                      )}
+                    </div>
+                  </div>
+                  {/* 외부 링크 버튼 */}
+                  {item.volumeInfo.url && (
+                    <a href={item.volumeInfo.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="도서 정보 사이트로 이동" className="shrink-0 opacity-30 hover:opacity-100 text-blue-500 transition-opacity self-start p-1 mt-0.5">
+                      <ExternalLink size={15}/>
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button onClick={handleAddBookManually} className={`w-full mt-4 p-3 rounded-xl border-2 border-dashed ${currentTheme.border} opacity-60 hover:opacity-100 hover:border-blue-400 hover:text-blue-500 font-bold transition-all`}>
+              + 직접 입력하기
+            </button>
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <div className="fixed bg-white border rounded-xl shadow-2xl py-2 w-40 z-50 text-sm" style={{top:contextMenu.y, left:contextMenu.x}} onClick={e=>e.stopPropagation()}>
           <button className="w-full text-left px-4 py-2 hover:bg-gray-100 text-black" onClick={()=>{setEditingBookId(contextMenu.book.id);setContextMenu(null)}}>이름 변경</button>
