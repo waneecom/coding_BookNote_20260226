@@ -6,7 +6,7 @@ import {
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2
 } from 'lucide-react';
-import { supabase } from './supabase';
+import { supabase, isSupabaseConfigured } from './supabase';
 
 const getYoutubeId = (url) => {
   if (!url) return null;
@@ -180,6 +180,7 @@ export default function App() {
   };
 
   const handleSignup = async () => {
+    if (!isSupabaseConfigured) return setAuthError('서버 연결이 설정되지 않았습니다. Vercel 환경 변수(REACT_APP_SUPABASE_URL, REACT_APP_SUPABASE_ANON_KEY)를 추가한 후 재배포해주세요.');
     const name = authName.trim();
     if (!name || !authPassword) return setAuthError('이름과 비밀번호를 입력해주세요.');
     if (authPassword !== authConfirmPw) return setAuthError('비밀번호가 일치하지 않습니다.');
@@ -197,19 +198,30 @@ export default function App() {
       setIsAppLoading(true);
       await loadUserData(name, name);
     } catch (err) {
-      setAuthError('오류가 발생했습니다: ' + err.message);
+      if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+        setAuthError('서버에 연결할 수 없습니다. Supabase 프로젝트가 일시 정지됐거나 Vercel 환경 변수가 없습니다. supabase.com에서 프로젝트 상태를 확인해주세요.');
+      } else if (err.message?.includes('schema cache') || err.code === 'PGRST204') {
+        setAuthError('DB 테이블을 찾을 수 없습니다. Supabase SQL Editor에서 NOTIFY pgrst, \'reload schema\'; 를 실행해주세요.');
+      } else {
+        setAuthError('오류가 발생했습니다: ' + err.message);
+      }
     } finally {
       setIsAuthLoading(false);
     }
   };
 
   const handleLogin = async () => {
+    if (!isSupabaseConfigured) return setAuthError('서버 연결이 설정되지 않았습니다. Vercel 환경 변수(REACT_APP_SUPABASE_URL, REACT_APP_SUPABASE_ANON_KEY)를 추가한 후 재배포해주세요.');
     const name = authName.trim();
     if (!name || !authPassword) return setAuthError('이름과 비밀번호를 입력해주세요.');
     setIsAuthLoading(true); setAuthError('');
     try {
       const { data: user, error } = await supabase.from('booknote_users').select('id, display_name, password_hash').eq('id', name).single();
-      if (error || !user) return setAuthError('존재하지 않는 계정입니다.');
+      if (error) {
+        if (error.message?.includes('schema cache')) throw error;
+        return setAuthError('존재하지 않는 계정입니다.');
+      }
+      if (!user) return setAuthError('존재하지 않는 계정입니다.');
       const hash = await hashPassword(authPassword);
       if (user.password_hash !== hash) return setAuthError('비밀번호가 올바르지 않습니다.');
       const session = { id: user.id, displayName: user.display_name };
@@ -218,7 +230,13 @@ export default function App() {
       setIsAppLoading(true);
       await loadUserData(user.id, user.display_name);
     } catch (err) {
-      setAuthError('로그인 오류: ' + err.message);
+      if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+        setAuthError('서버에 연결할 수 없습니다. Supabase 프로젝트가 일시 정지됐거나 Vercel 환경 변수가 없습니다. supabase.com에서 프로젝트 상태를 확인해주세요.');
+      } else if (err.message?.includes('schema cache') || err.code === 'PGRST204') {
+        setAuthError('DB 테이블을 찾을 수 없습니다. Supabase SQL Editor에서 NOTIFY pgrst, \'reload schema\'; 를 실행해주세요.');
+      } else {
+        setAuthError('로그인 오류: ' + err.message);
+      }
     } finally {
       setIsAuthLoading(false);
     }
@@ -314,24 +332,56 @@ export default function App() {
     }
   }, [selectedDetail?.id, sidebarTab, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleRunSpellCheck = () => {
+  const handleRunSpellCheck = async () => {
     if (!selectedDetail || !selectedDetail.content) return;
     setIsCheckingSpelling(true);
     setSpellMessage('');
+    const text = selectedDetail.content;
+
+    // 1) Vercel 서버리스 API 호출 (부산대 맞춤법 검사기)
+    try {
+      const res = await fetch('/api/spell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      if (res.ok) {
+        const result = await res.json();
+        if (result.changed) {
+          setSpellMessage(`✨ ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+          setSpellCorrection(result.corrected);
+        } else {
+          setSpellMessage('✅ 맞춤법 검사 완료: 오류가 없습니다!');
+        }
+        setIsCheckingSpelling(false);
+        return;
+      }
+    } catch { /* 로컬 환경 등 API 실패 시 아래 폴백으로 */ }
+
+    // 2) 로컬 패턴 폴백 (개발 환경 / API 접근 불가 시)
     setTimeout(() => {
-      let correctedText = selectedDetail.content;
-      correctedText = correctedText.replace(/움지이고/g, '움직이고');
-      correctedText = correctedText.replace(/재밋다/g, '재밌다');
-      correctedText = correctedText.replace(/똑같에/g, '똑같애');
-      correctedText = correctedText.replace(/바뀌내용/g, '바뀐 내용');
-      correctedText = correctedText.replace(/않돼/g, '안 돼');
-      correctedText = correctedText.replace(/않해/g, '안 해');
-      correctedText = correctedText.replace(/어떡해/g, '어떻게 해');
-      if (correctedText === selectedDetail.content) setSpellMessage('✅ 분석 완료: 발견된 오타가 없습니다!');
-      else setSpellMessage('✨ 오타를 수정했습니다! 아래에서 확인 후 적용하세요.');
-      setSpellCorrection(correctedText);
+      let correctedText = text;
+      const rules = [
+        [/않돼/g, '안 돼'], [/않되/g, '안 돼'], [/않해/g, '안 해'],
+        [/않좋/g, '안 좋'], [/웬지/g, '왠지'], [/왠만/g, '웬만'],
+        [/오랫만/g, '오랜만'], [/어떻해/g, '어떡해'], [/됬/g, '됐'],
+        [/바램/g, '바람'], [/왠일/g, '웬일'], [/움지이/g, '움직이'],
+        [/재밋/g, '재밌'], [/틀리다(?=\s*(?:고|는|면|서|고|어|아))/g, '다르다'],
+      ];
+      let count = 0;
+      for (const [pattern, replacement] of rules) {
+        const before = correctedText;
+        correctedText = correctedText.replace(pattern, replacement);
+        if (correctedText !== before) count++;
+      }
+      if (count > 0) {
+        setSpellMessage(`✨ ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+        setSpellCorrection(correctedText);
+      } else {
+        setSpellMessage('✅ 분석 완료: 발견된 오타가 없습니다! (배포 환경에서 정밀 검사 가능)');
+      }
       setIsCheckingSpelling(false);
-    }, 1000);
+    }, 800);
   };
 
   const applySpellCorrection = () => {
@@ -527,6 +577,16 @@ export default function App() {
             <h1 className="text-2xl font-black">BookNote</h1>
             <p className="text-xs opacity-40 mt-1">☁️ 나만의 클라우드 서재</p>
           </div>
+
+          {!isSupabaseConfigured && (
+            <div className="mb-4 text-xs text-amber-800 bg-amber-100 border border-amber-300 rounded-xl px-3 py-2.5 leading-relaxed">
+              ⚠️ <strong>서버 연결 오류</strong><br/>
+              Vercel 환경 변수가 설정되지 않았습니다.<br/>
+              Vercel → Project Settings → Environment Variables에서<br/>
+              <code className="bg-amber-200 px-1 rounded">REACT_APP_SUPABASE_URL</code>,{' '}
+              <code className="bg-amber-200 px-1 rounded">REACT_APP_SUPABASE_ANON_KEY</code>를 추가 후 재배포해주세요.
+            </div>
+          )}
 
           <div className={`flex rounded-xl overflow-hidden border-2 mb-6 ${currentTheme.border}`}>
             <button onClick={() => { setAuthMode('login'); setAuthError(''); }} className={`flex-1 py-2.5 text-sm font-bold transition-colors ${!isSignup ? `${currentTheme.primaryBg} text-white` : `${currentTheme.text} opacity-60 hover:opacity-100`}`}>로그인</button>
