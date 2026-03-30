@@ -2,9 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Book, Folder, ChevronRight, ChevronLeft, Search, CheckCircle, Video,
-  Plus, Moon, Sun, BookOpen,
+  Plus, Moon, Sun, BookOpen, Lock, Globe,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
-  Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2
+  Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2,
+  UserPlus, UserCheck
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase';
 
@@ -65,10 +66,11 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
-  // --- 독자 현황 ---
+  // --- 독자 현황 / 친구 ---
   const [showSocialPanel, setShowSocialPanel] = useState(false);
   const [socialData, setSocialData] = useState([]);
   const [isSocialLoading, setIsSocialLoading] = useState(false);
+  const [socialViewUserId, setSocialViewUserId] = useState(null);
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -160,7 +162,7 @@ export default function App() {
       const { data } = await supabase.from('booknote_saves').select('data').eq('id', userId).single();
       if (data?.data) {
         const db = data.data;
-        const firstLib = Object.keys(db)[0];
+        const firstLib = Object.keys(db).find(k => !k.startsWith('__'));
         setDatabases(db);
         setCurrentLibrary(firstLib);
         setBooks(db[firstLib].books || []);
@@ -510,14 +512,15 @@ export default function App() {
       publishedDate: info.publishedDate || '',
       contents: info.contents || '',
       salePrice: info.salePrice || 0,
-      url: info.url || ''
+      url: info.url || '',
+      visibility: 'private'
     };
     setBooks([...books, newBook]);
     setShowBookSearch(false); setBookSearchQuery(''); setBookSearchResults([]);
     setSelectedBook(newBook); setViewMode('chapters');
   };
 
-  const handleAddBookManually = () => { const newBook = { id: Date.now(), title: '새로운 책', author: '', totalPages: 300, status: '대기 중', category: [], coverUrl: '', videoUrl: '' }; setBooks([...books, newBook]); setShowBookSearch(false); setEditingBookId(newBook.id); };
+  const handleAddBookManually = () => { const newBook = { id: Date.now(), title: '새로운 책', author: '', totalPages: 300, status: '대기 중', category: [], coverUrl: '', videoUrl: '', visibility: 'private' }; setBooks([...books, newBook]); setShowBookSearch(false); setEditingBookId(newBook.id); };
   const handleAddChapter = () => { if (!selectedBook) return; const next = chapters.filter(c => c.bookId === selectedBook.id).length + 1; setChapters([...chapters, { id: Date.now(), bookId: selectedBook.id, index: next.toString(), title: `새로운 챕터 ${next}`, videoUrl: '' }]); };
   const handleAddDetail = () => { if (!selectedChapter) return; const next = details.filter(d => d.chapterId === selectedChapter.id).length + 1; setDetails([...details, { id: Date.now(), chapterId: selectedChapter.id, index: next.toString(), title: `세부 항목 ${next}`, startPage: 1, endPage: 10, content: '', videoUrl: '' }]); };
   const handleRename = (id, newName) => { setBooks(books.map(b => b.id === id ? { ...b, title: newName } : b)); setEditingBookId(null); };
@@ -547,12 +550,12 @@ export default function App() {
   };
 
   const handleDeleteLibrary = () => {
-    const owners = Object.keys(databases);
+    const owners = Object.keys(databases).filter(k => !k.startsWith('__'));
     if (owners.length <= 1) return alert('마지막 서재는 삭제할 수 없습니다.');
     if (!window.confirm(`"${currentLibrary}" 서재를 삭제하시겠습니까?\n(모든 책과 노트가 삭제됩니다)`)) return;
     const newDb = { ...databases };
     delete newDb[currentLibrary];
-    const nextOwner = Object.keys(newDb)[0];
+    const nextOwner = Object.keys(newDb).find(k => !k.startsWith('__'));
     setDatabases(newDb);
     setCurrentLibrary(nextOwner);
     setBooks(newDb[nextOwner].books || []);
@@ -565,6 +568,52 @@ export default function App() {
     supabase.from('booknote_saves').upsert({ id: currentUserRef.current?.id, data: newDb });
   };
 
+  // 내 친구 목록 (databases.__meta.friends)
+  const getMyFriends = () => databasesRef.current?.__meta?.friends || [];
+  const getFriendStatus = (userId) => getMyFriends().find(f => f.id === userId)?.status || 'none';
+
+  const saveMeta = async (newMeta) => {
+    const updatedDb = { ...databasesRef.current, __meta: newMeta };
+    setDatabases(updatedDb);
+    await supabase.from('booknote_saves').upsert({ id: currentUserRef.current?.id, data: updatedDb });
+  };
+
+  const sendFriendRequest = async (targetId) => {
+    const myFriends = getMyFriends();
+    if (myFriends.find(f => f.id === targetId)) return;
+    // 내 목록에 sent 추가
+    await saveMeta({ ...databasesRef.current?.__meta, friends: [...myFriends, { id: targetId, status: 'sent' }] });
+    // 상대방 목록에 received 추가
+    try {
+      const { data: tgt } = await supabase.from('booknote_saves').select('data').eq('id', targetId).single();
+      if (tgt?.data) {
+        const tgtMeta = tgt.data.__meta || {};
+        const tgtFriends = tgtMeta.friends || [];
+        if (!tgtFriends.find(f => f.id === currentUser.id)) {
+          const updatedTgt = { ...tgt.data, __meta: { ...tgtMeta, friends: [...tgtFriends, { id: currentUser.id, status: 'received' }] } };
+          await supabase.from('booknote_saves').upsert({ id: targetId, data: updatedTgt });
+        }
+      }
+    } catch {}
+    loadSocialData();
+  };
+
+  const acceptFriendRequest = async (fromId) => {
+    // 내 목록 accepted로 변경
+    const myFriends = getMyFriends().map(f => f.id === fromId ? { ...f, status: 'accepted' } : f);
+    await saveMeta({ ...databasesRef.current?.__meta, friends: myFriends });
+    // 상대방 목록도 accepted로 변경
+    try {
+      const { data: src } = await supabase.from('booknote_saves').select('data').eq('id', fromId).single();
+      if (src?.data) {
+        const srcMeta = src.data.__meta || {};
+        const srcFriends = (srcMeta.friends || []).map(f => f.id === currentUser.id ? { ...f, status: 'accepted' } : f);
+        await supabase.from('booknote_saves').upsert({ id: fromId, data: { ...src.data, __meta: { ...srcMeta, friends: srcFriends } } });
+      }
+    } catch {}
+    loadSocialData();
+  };
+
   const loadSocialData = async () => {
     setIsSocialLoading(true);
     try {
@@ -572,15 +621,24 @@ export default function App() {
         supabase.from('booknote_users').select('id, display_name'),
         supabase.from('booknote_saves').select('id, data')
       ]);
+      const myFriends = databasesRef.current?.__meta?.friends || [];
       const result = (users || [])
         .filter(u => u.id !== currentUser?.id)
         .map(u => {
           const save = (saves || []).find(s => s.id === u.id);
+          const friendEntry = myFriends.find(f => f.id === u.id);
+          const friendStatus = friendEntry?.status || 'none';
           const allBooks = [];
           if (save?.data) {
-            Object.values(save.data).forEach(lib => (lib.books || []).forEach(b => allBooks.push(b)));
+            Object.entries(save.data).forEach(([key, lib]) => {
+              if (key.startsWith('__') || !lib?.books) return;
+              lib.books.forEach(b => {
+                const vis = b.visibility || 'private';
+                if (vis === 'public' || (vis === 'friends' && friendStatus === 'accepted')) allBooks.push(b);
+              });
+            });
           }
-          return { id: u.id, displayName: u.display_name, books: allBooks };
+          return { id: u.id, displayName: u.display_name, books: allBooks, friendStatus };
         });
       setSocialData(result);
     } catch (err) {
@@ -724,7 +782,7 @@ export default function App() {
             </div>
             <div className="flex gap-1">
               <button onClick={() => { setShowAddUser(true); setNewUserName(''); }} className={`text-[10px] ${currentTheme.primary} font-black px-2 py-0.5 rounded-full bg-black/5 hover:bg-black/10 transition-colors`}>+ 추가</button>
-              {Object.keys(databases).length > 1 && <button onClick={handleDeleteLibrary} className="text-[10px] text-red-400 px-1.5 py-0.5 rounded-full bg-red-50 hover:bg-red-100 transition-colors" title="서재 삭제"><Trash2 size={9}/></button>}
+              {Object.keys(databases).filter(k=>!k.startsWith('__')).length > 1 && <button onClick={handleDeleteLibrary} className="text-[10px] text-red-400 px-1.5 py-0.5 rounded-full bg-red-50 hover:bg-red-100 transition-colors" title="서재 삭제"><Trash2 size={9}/></button>}
             </div>
           </div>
           <div className="px-3 py-2.5">
@@ -735,7 +793,7 @@ export default function App() {
             </div>
           ) : (
             <select value={currentLibrary} onChange={(e) => loadLibrary(e.target.value)} className={`w-full bg-transparent font-black text-sm outline-none cursor-pointer ${currentTheme.primary}`}>
-              {Object.keys(databases).map(owner => <option key={owner} value={owner} className="text-gray-900">{owner}</option>)}
+              {Object.keys(databases).filter(k=>!k.startsWith('__')).map(owner => <option key={owner} value={owner} className="text-gray-900">{owner}</option>)}
             </select>
           )}
           </div>
@@ -921,6 +979,12 @@ export default function App() {
                           <button onClick={(e)=>{e.stopPropagation();setEditingBookId(book.id)}} className="p-1 rounded-full bg-white/80 text-gray-600 hover:text-blue-500 shadow-sm" title="이름 변경"><Edit3 size={11}/></button>
                           <button onClick={(e)=>{e.stopPropagation();if(window.confirm(`"${book.title}"을 삭제하시겠습니까?`))handleDeleteBook(book.id);}} className="p-1 rounded-full bg-white/80 text-gray-600 hover:text-red-500 shadow-sm" title="삭제"><Trash2 size={11}/></button>
                         </div>
+                        {/* 공개 설정 아이콘 */}
+                        <button onClick={(e)=>{e.stopPropagation();const v=book.visibility||'private';const next={private:'public',public:'friends',friends:'private'};updateBook(book.id,{visibility:next[v]});}} title="공개 설정 변경" className="absolute bottom-2 right-2 transition-transform hover:scale-110">
+                          <div className={`px-1.5 py-0.5 rounded-full flex items-center gap-0.5 text-[9px] font-bold ${(book.visibility||'private')==='public'?'bg-green-500/80 text-white':(book.visibility||'private')==='friends'?'bg-blue-500/80 text-white':'bg-black/40 text-white'}`}>
+                            {(book.visibility||'private')==='public'?<Globe size={9}/>:(book.visibility||'private')==='friends'?<Users size={9}/>:<Lock size={9}/>}
+                          </div>
+                        </button>
                       </div>
                       {/* 정보 영역 */}
                       <div className={`flex-1 px-4 py-3 flex flex-col justify-between ${currentTheme.panel}`}>
@@ -975,6 +1039,16 @@ export default function App() {
                       {selectedBook.publishedDate && <div className="flex items-center gap-2"><span>출판일:</span><span className="font-medium">{selectedBook.publishedDate}</span></div>}
                       {selectedBook.salePrice > 0 && <div className="flex items-center gap-2"><span>판매가:</span><span className={`font-bold ${currentTheme.primary}`}>{selectedBook.salePrice.toLocaleString()}원</span></div>}
                       {selectedBook.url && <div className="flex items-center gap-2"><span>링크:</span><a href={selectedBook.url} target="_blank" rel="noopener noreferrer" className={`${currentTheme.primary} hover:underline flex items-center gap-1`}>도서 정보 보기 <ExternalLink size={12}/></a></div>}
+                      <div className="flex items-center gap-2 pt-1">
+                        <span>공개:</span>
+                        <div className="flex gap-1">
+                          {[['private','비공개',Lock],['friends','친구만',Users],['public','전체공개',Globe]].map(([v, label, Icon]) => (
+                            <button key={v} onClick={()=>updateBook(selectedBook.id,{visibility:v})} className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-bold border transition-all ${(selectedBook.visibility||'private')===v?v==='public'?'bg-green-100 text-green-700 border-green-300':v==='friends'?'bg-blue-100 text-blue-700 border-blue-300':'bg-black/10 border-black/20':'bg-transparent border-transparent opacity-40 hover:opacity-70'}`}>
+                              <Icon size={10}/>{label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1119,50 +1193,122 @@ export default function App() {
           </div>
         </div>
       )}
-      {showSocialPanel && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setShowSocialPanel(false)}>
-          <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl p-8 w-full max-w-md mx-4 max-h-[80vh] flex flex-col`} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-black flex items-center gap-2"><Users size={20}/> 다른 독자</h2>
-              <button onClick={() => setShowSocialPanel(false)} className="text-xs opacity-40 hover:opacity-100 px-2 py-1 rounded-lg hover:bg-black/5">닫기</button>
-            </div>
-            {isSocialLoading ? (
-              <div className="flex-1 flex items-center justify-center text-sm opacity-50 animate-pulse">불러오는 중...</div>
-            ) : socialData.length === 0 ? (
-              <div className="flex-1 flex items-center justify-center text-sm opacity-40">다른 독자가 없습니다.</div>
-            ) : (
-              <div className="flex-1 overflow-y-auto space-y-4">
-                {socialData.map(user => (
-                  <div key={user.id} className={`p-4 rounded-2xl border ${currentTheme.border} ${currentTheme.primaryLight}`}>
-                    <div className="flex items-center gap-2 mb-3">
-                      <div className={`w-8 h-8 rounded-full ${currentTheme.primaryBg} flex items-center justify-center text-white text-sm font-black`}>
-                        {user.displayName[0]}
+      {showSocialPanel && (() => {
+        const viewUser = socialData.find(u => u.id === socialViewUserId);
+        const pendingReceived = (databasesRef.current?.__meta?.friends || []).filter(f => f.status === 'received');
+        return (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => { setShowSocialPanel(false); setSocialViewUserId(null); }}>
+            <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl w-full max-w-md mx-4 max-h-[85vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
+              {/* 헤더 */}
+              <div className={`px-6 py-4 border-b ${currentTheme.border} flex items-center gap-2 shrink-0`}>
+                {viewUser && <button onClick={() => setSocialViewUserId(null)} className="p-1 rounded-full hover:bg-black/5 mr-1"><ChevronLeft size={18}/></button>}
+                <div className="flex-1 font-black text-base flex items-center gap-2">
+                  {viewUser ? (
+                    <><div className={`w-7 h-7 rounded-full ${currentTheme.primaryBg} flex items-center justify-center text-white text-xs font-black shrink-0`}>{viewUser.displayName[0]}</div>{viewUser.displayName}</>
+                  ) : <><Users size={18}/> 다른 독자</>}
+                </div>
+                {pendingReceived.length > 0 && !viewUser && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-500 text-white">{pendingReceived.length}개 요청</span>
+                )}
+                <button onClick={() => { setShowSocialPanel(false); setSocialViewUserId(null); }} className="text-xs opacity-40 hover:opacity-100 px-2 py-1 rounded-lg hover:bg-black/5 ml-1">닫기</button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6">
+                {isSocialLoading ? (
+                  <div className="flex items-center justify-center h-32 text-sm opacity-40 animate-pulse">불러오는 중...</div>
+                ) : viewUser ? (
+                  /* 프로필 뷰 */
+                  <div>
+                    <div className="flex items-center gap-4 mb-6">
+                      <div className={`w-14 h-14 rounded-2xl ${currentTheme.primaryBg} flex items-center justify-center text-white text-2xl font-black`}>{viewUser.displayName[0]}</div>
+                      <div className="flex-1">
+                        <div className="font-black text-lg">{viewUser.displayName}</div>
+                        <div className="text-xs opacity-40">공개 책 {viewUser.books.length}권</div>
                       </div>
-                      <div>
-                        <div className="font-black text-sm">{user.displayName}</div>
-                        <div className="text-xs opacity-40">{user.books.length}권 등록</div>
-                      </div>
+                      {/* 친구 버튼 */}
+                      {viewUser.friendStatus === 'none' && (
+                        <button onClick={() => sendFriendRequest(viewUser.id)} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-blue-500 text-white hover:bg-blue-600 transition-colors">
+                          <UserPlus size={13}/> 친구 추가
+                        </button>
+                      )}
+                      {viewUser.friendStatus === 'sent' && (
+                        <span className="text-xs font-bold px-3 py-2 rounded-xl bg-black/5 opacity-50">요청 보냄</span>
+                      )}
+                      {viewUser.friendStatus === 'received' && (
+                        <button onClick={() => acceptFriendRequest(viewUser.id)} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-green-500 text-white hover:bg-green-600 transition-colors">
+                          <UserCheck size={13}/> 수락하기
+                        </button>
+                      )}
+                      {viewUser.friendStatus === 'accepted' && (
+                        <span className="flex items-center gap-1 text-xs font-bold px-3 py-2 rounded-xl bg-green-50 text-green-600 border border-green-200">
+                          <UserCheck size={13}/> 친구
+                        </span>
+                      )}
                     </div>
-                    {user.books.length === 0 ? (
-                      <p className="text-xs opacity-40 pl-1">아직 등록된 책이 없습니다.</p>
+                    <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-2">읽은 책</div>
+                    {viewUser.books.length === 0 ? (
+                      <div className="text-sm opacity-40 text-center py-10">
+                        {viewUser.friendStatus === 'accepted' ? '공개된 책이 없습니다.' : '친구가 되면 더 많은 책을 볼 수 있어요.'}
+                      </div>
                     ) : (
-                      <div className="space-y-1.5">
-                        {user.books.map((b, i) => (
-                          <div key={i} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded-lg bg-black/5`}>
-                            <Book size={11} className="opacity-40 shrink-0"/>
-                            <span className="font-bold truncate">{b.title}</span>
-                            {b.author && <span className="opacity-40 shrink-0">{b.author}</span>}
+                      <div className="space-y-2">
+                        {viewUser.books.map((b, i) => (
+                          <div key={i} className={`flex items-center gap-3 p-3 rounded-xl border ${currentTheme.border}`}>
+                            {b.coverUrl
+                              ? <img src={b.coverUrl} className="w-8 h-11 object-contain rounded shrink-0" alt=""/>
+                              : <div className={`w-8 h-11 rounded ${currentTheme.primaryLight} flex items-center justify-center shrink-0`}><Book size={12} className="opacity-30"/></div>
+                            }
+                            <div className="flex-1 min-w-0">
+                              <div className="font-bold text-sm truncate">{b.title}</div>
+                              {b.author && <div className="text-xs opacity-40 truncate">{b.author}</div>}
+                            </div>
+                            <div className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${b.visibility==='public'?'bg-green-100 text-green-600':'bg-blue-100 text-blue-600'}`}>
+                              {b.visibility==='public'?'공개':'친구'}
+                            </div>
                           </div>
                         ))}
                       </div>
                     )}
                   </div>
-                ))}
+                ) : (
+                  /* 유저 목록 */
+                  <div className="space-y-2">
+                    {/* 친구 요청 알림 */}
+                    {pendingReceived.map(req => {
+                      const reqUser = socialData.find(u => u.id === req.id);
+                      if (!reqUser) return null;
+                      return (
+                        <div key={req.id} className="flex items-center gap-3 p-3 rounded-xl bg-amber-50 border border-amber-200">
+                          <div className="w-8 h-8 rounded-full bg-amber-400 flex items-center justify-center text-white text-sm font-black shrink-0">{reqUser.displayName[0]}</div>
+                          <div className="flex-1 text-sm"><span className="font-bold">{reqUser.displayName}</span><span className="opacity-60"> 님이 친구 요청을 보냈습니다</span></div>
+                          <button onClick={() => acceptFriendRequest(req.id)} className="text-[11px] font-bold px-2 py-1 rounded-lg bg-green-500 text-white hover:bg-green-600 shrink-0">수락</button>
+                        </div>
+                      );
+                    })}
+                    {socialData.length === 0 ? (
+                      <div className="text-center text-sm opacity-40 py-10">다른 독자가 없습니다.</div>
+                    ) : socialData.map(user => (
+                      <div key={user.id} onClick={() => setSocialViewUserId(user.id)} className={`flex items-center gap-3 p-3 rounded-xl border ${currentTheme.border} hover:border-blue-300 cursor-pointer hover:shadow-sm transition-all`}>
+                        <div className={`w-10 h-10 rounded-xl ${currentTheme.primaryBg} flex items-center justify-center text-white font-black shrink-0`}>{user.displayName[0]}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-sm">{user.displayName}</div>
+                          <div className="text-xs opacity-40">공개 책 {user.books.length}권</div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {user.friendStatus === 'accepted' && <span className="flex items-center gap-0.5 text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-200"><UserCheck size={10}/> 친구</span>}
+                          {user.friendStatus === 'sent' && <span className="text-[10px] font-bold text-gray-400 bg-black/5 px-2 py-0.5 rounded-full">요청중</span>}
+                          {user.friendStatus === 'received' && <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">받은요청</span>}
+                          <ChevronRight size={14} className="opacity-30"/>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       {contextMenu && (
         <div className="fixed bg-white border rounded-xl shadow-2xl py-2 w-40 z-50 text-sm" style={{top:contextMenu.y, left:contextMenu.x}} onClick={e=>e.stopPropagation()}>
           <button className="w-full text-left px-4 py-2 hover:bg-gray-100 text-black" onClick={()=>{setEditingBookId(contextMenu.book.id);setContextMenu(null)}}>이름 변경</button>
