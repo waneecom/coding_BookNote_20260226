@@ -338,50 +338,65 @@ export default function App() {
     setSpellMessage('');
     const text = selectedDetail.content;
 
-    // 1) Vercel 서버리스 API 호출 (부산대 맞춤법 검사기)
+    // 1) Vercel 서버리스 API 호출 (카카오 맞춤법 검사기)
     try {
       const res = await fetch('/api/spell', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
+        body: JSON.stringify({ text }),
+        signal: AbortSignal.timeout(12000)
       });
       if (res.ok) {
         const result = await res.json();
-        if (result.changed) {
-          setSpellMessage(`✨ ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
-          setSpellCorrection(result.corrected);
-        } else {
-          setSpellMessage('✅ 맞춤법 검사 완료: 오류가 없습니다!');
+        if (!result.error) {
+          if (result.changed) {
+            setSpellMessage(`✨ [카카오 AI] ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+            setSpellCorrection(result.corrected);
+          } else {
+            setSpellMessage('✅ [카카오 AI] 맞춤법 검사 완료: 오류가 없습니다!');
+          }
+          setIsCheckingSpelling(false);
+          return;
         }
-        setIsCheckingSpelling(false);
-        return;
       }
-    } catch { /* 로컬 환경 등 API 실패 시 아래 폴백으로 */ }
+    } catch { /* API 실패 → 로컬 패턴으로 폴백 */ }
 
-    // 2) 로컬 패턴 폴백 (개발 환경 / API 접근 불가 시)
+    // 2) 로컬 패턴 폴백 (API 접근 불가 / 개발 환경)
     setTimeout(() => {
       let correctedText = text;
       const rules = [
+        // 안/않 구분
         [/않돼/g, '안 돼'], [/않되/g, '안 돼'], [/않해/g, '안 해'],
-        [/않좋/g, '안 좋'], [/웬지/g, '왠지'], [/왠만/g, '웬만'],
-        [/오랫만/g, '오랜만'], [/어떻해/g, '어떡해'], [/됬/g, '됐'],
-        [/바램/g, '바람'], [/왠일/g, '웬일'], [/움지이/g, '움직이'],
-        [/재밋/g, '재밌'], [/틀리다(?=\s*(?:고|는|면|서|고|어|아))/g, '다르다'],
+        [/않좋/g, '안 좋'], [/않되요/g, '안 돼요'],
+        // 되/돼 구분
+        [/됬/g, '됐'], [/돼었/g, '되었'],
+        // 왜/웬/왠
+        [/웬지/g, '왠지'], [/왠만/g, '웬만'], [/왠일/g, '웬일'],
+        // 맞춤법 오류
+        [/오랫만/g, '오랜만'], [/어떻해/g, '어떡해'],
+        [/바램/g, '바람'], [/움지이/g, '움직이'],
+        // ㅅ/ㅆ 받침 혼동
+        [/재밋/g, '재밌'], [/맛잇/g, '맛있'],
+        [/멋잇/g, '멋있'], [/재밋/g, '재밌'],
+        // 띄어쓰기
+        [/할수있/g, '할 수 있'], [/할수없/g, '할 수 없'],
+        [/것같/g, '것 같'], [/것이다/g, '것이다'],
       ];
       let count = 0;
+      const fixes = [];
       for (const [pattern, replacement] of rules) {
         const before = correctedText;
         correctedText = correctedText.replace(pattern, replacement);
-        if (correctedText !== before) count++;
+        if (correctedText !== before) { count++; fixes.push(replacement); }
       }
       if (count > 0) {
-        setSpellMessage(`✨ ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+        setSpellMessage(`✨ [기본 검사] ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
         setSpellCorrection(correctedText);
       } else {
-        setSpellMessage('✅ 분석 완료: 발견된 오타가 없습니다! (배포 환경에서 정밀 검사 가능)');
+        setSpellMessage('⚠️ [기본 검사] 오타를 찾지 못했습니다.');
       }
       setIsCheckingSpelling(false);
-    }, 800);
+    }, 400);
   };
 
   const applySpellCorrection = () => {
