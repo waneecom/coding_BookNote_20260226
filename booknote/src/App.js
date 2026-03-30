@@ -65,6 +65,11 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
+  // --- 독자 현황 ---
+  const [showSocialPanel, setShowSocialPanel] = useState(false);
+  const [socialData, setSocialData] = useState([]);
+  const [isSocialLoading, setIsSocialLoading] = useState(false);
+
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
     dark: { bg: 'bg-gray-900', text: 'text-gray-100', panel: 'bg-gray-800', border: 'border-gray-700', primary: 'text-blue-400', primaryBg: 'bg-blue-500', primaryLight: 'bg-gray-800' },
@@ -350,10 +355,10 @@ export default function App() {
         const result = await res.json();
         if (!result.error) {
           if (result.changed) {
-            setSpellMessage(`✨ [카카오 AI] ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+            setSpellMessage(`✨ ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
             setSpellCorrection(result.corrected);
           } else {
-            setSpellMessage('✅ [카카오 AI] 맞춤법 검사 완료: 오류가 없습니다!');
+            setSpellMessage('✅ 맞춤법 검사 완료: 오류가 없습니다!');
           }
           setIsCheckingSpelling(false);
           return;
@@ -390,10 +395,10 @@ export default function App() {
         if (correctedText !== before) { count++; fixes.push(replacement); }
       }
       if (count > 0) {
-        setSpellMessage(`✨ [기본 검사] ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+        setSpellMessage(`✨ ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
         setSpellCorrection(correctedText);
       } else {
-        setSpellMessage('⚠️ [기본 검사] 오타를 찾지 못했습니다.');
+        setSpellMessage('⚠️ 오타를 찾지 못했습니다.');
       }
       setIsCheckingSpelling(false);
     }, 400);
@@ -558,6 +563,31 @@ export default function App() {
     setSelectedBook(null);
     localStorage.setItem('booknote_web_final', JSON.stringify(newDb));
     supabase.from('booknote_saves').upsert({ id: currentUserRef.current?.id, data: newDb });
+  };
+
+  const loadSocialData = async () => {
+    setIsSocialLoading(true);
+    try {
+      const [{ data: users }, { data: saves }] = await Promise.all([
+        supabase.from('booknote_users').select('id, display_name'),
+        supabase.from('booknote_saves').select('id, data')
+      ]);
+      const result = (users || [])
+        .filter(u => u.id !== currentUser?.id)
+        .map(u => {
+          const save = (saves || []).find(s => s.id === u.id);
+          const allBooks = [];
+          if (save?.data) {
+            Object.values(save.data).forEach(lib => (lib.books || []).forEach(b => allBooks.push(b)));
+          }
+          return { id: u.id, displayName: u.display_name, books: allBooks };
+        });
+      setSocialData(result);
+    } catch (err) {
+      console.error('독자 데이터 로딩 실패:', err);
+    } finally {
+      setIsSocialLoading(false);
+    }
   };
 
   const usedGenres = [...new Set([...customGenres, ...books.flatMap(b => Array.isArray(b.category) ? b.category : [b.category])])].filter(g => g && g !== '');
@@ -856,12 +886,18 @@ export default function App() {
 
       <main className="flex-1 flex flex-col relative z-0 min-w-0">
         <header className={`h-16 border-b ${currentTheme.border} ${currentTheme.panel} flex items-center px-6 z-10 shadow-sm shrink-0`}>
-          <div className="flex items-center gap-2 text-sm font-medium opacity-60">
+          <div className="flex items-center gap-2 text-sm font-medium opacity-60 flex-1">
             <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="hover:opacity-100 flex items-center gap-1 hover:text-blue-500 transition-colors"><Folder size={16}/> 서재</button>
             {selectedBook && <><ChevronRight size={14}/><button onClick={() => {setViewMode('chapters'); setSelectedChapter(null); setSelectedDetail(null);}} className={`hover:opacity-100 hover:text-blue-500 transition-colors truncate max-w-[150px] ${viewMode==='chapters'?'text-blue-500 font-bold opacity-100':''}`}>{selectedBook.title}</button></>}
             {selectedChapter && viewMode !== 'shelf' && <><ChevronRight size={14}/><button onClick={() => {setViewMode('details'); setSelectedDetail(null);}} className={`hover:opacity-100 hover:text-blue-500 transition-colors truncate max-w-[150px] ${viewMode==='details'?'text-blue-500 font-bold opacity-100':''}`}>{selectedChapter.title}</button></>}
             {selectedDetail && viewMode === 'editor' && <><ChevronRight size={14}/><span className="text-blue-500 font-bold opacity-100 truncate max-w-[150px]">{selectedDetail.title}</span></>}
           </div>
+          <button
+            onClick={() => { setShowSocialPanel(true); loadSocialData(); }}
+            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border ${currentTheme.border} hover:border-blue-400 hover:text-blue-500 transition-all opacity-60 hover:opacity-100`}
+          >
+            <Users size={14}/> 다른 독자
+          </button>
         </header>
 
         <div className="flex-1 overflow-y-auto p-8">
@@ -875,10 +911,9 @@ export default function App() {
                       {/* 표지 영역 */}
                       <div className="relative h-32 shrink-0 overflow-hidden">
                         {book.coverUrl
-                          ? <img src={book.coverUrl} className="w-full h-full object-cover" alt={book.title}/>
+                          ? <img src={book.coverUrl} className="w-full h-full object-contain p-1" alt={book.title}/>
                           : <div className={`w-full h-full ${currentTheme.primaryLight} flex items-center justify-center`}><Book size={38} className={`${currentTheme.primary} opacity-20`}/></div>
                         }
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/25 to-transparent"/>
                         <div className="absolute top-2 left-2">
                           <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm ${book.status==='읽는 중'?'bg-blue-500/90 text-white':'bg-black/35 text-white'}`}>{book.status}</span>
                         </div>
@@ -1081,6 +1116,50 @@ export default function App() {
             <button onClick={handleAddBookManually} className={`w-full mt-4 p-3 rounded-xl border-2 border-dashed ${currentTheme.border} opacity-60 hover:opacity-100 hover:border-blue-400 hover:text-blue-500 font-bold transition-all`}>
               + 직접 입력하기
             </button>
+          </div>
+        </div>
+      )}
+      {showSocialPanel && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setShowSocialPanel(false)}>
+          <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl p-8 w-full max-w-md mx-4 max-h-[80vh] flex flex-col`} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-black flex items-center gap-2"><Users size={20}/> 다른 독자</h2>
+              <button onClick={() => setShowSocialPanel(false)} className="text-xs opacity-40 hover:opacity-100 px-2 py-1 rounded-lg hover:bg-black/5">닫기</button>
+            </div>
+            {isSocialLoading ? (
+              <div className="flex-1 flex items-center justify-center text-sm opacity-50 animate-pulse">불러오는 중...</div>
+            ) : socialData.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center text-sm opacity-40">다른 독자가 없습니다.</div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-4">
+                {socialData.map(user => (
+                  <div key={user.id} className={`p-4 rounded-2xl border ${currentTheme.border} ${currentTheme.primaryLight}`}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className={`w-8 h-8 rounded-full ${currentTheme.primaryBg} flex items-center justify-center text-white text-sm font-black`}>
+                        {user.displayName[0]}
+                      </div>
+                      <div>
+                        <div className="font-black text-sm">{user.displayName}</div>
+                        <div className="text-xs opacity-40">{user.books.length}권 등록</div>
+                      </div>
+                    </div>
+                    {user.books.length === 0 ? (
+                      <p className="text-xs opacity-40 pl-1">아직 등록된 책이 없습니다.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {user.books.map((b, i) => (
+                          <div key={i} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded-lg bg-black/5`}>
+                            <Book size={11} className="opacity-40 shrink-0"/>
+                            <span className="font-bold truncate">{b.title}</span>
+                            {b.author && <span className="opacity-40 shrink-0">{b.author}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
