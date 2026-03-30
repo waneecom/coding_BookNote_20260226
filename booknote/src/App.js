@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Book, Folder, ChevronRight, Search, CheckCircle, Video,
+  Book, Folder, ChevronRight, ChevronLeft, Search, CheckCircle, Video,
   Plus, Moon, Sun, BookOpen,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2
@@ -686,24 +686,29 @@ export default function App() {
             </button>
           </div>
         </div>
-        <div className="bg-black/5 p-3 rounded-xl border border-black/10">
-          <div className="flex justify-between items-center mb-2">
-            <label className="text-xs font-bold uppercase tracking-widest opacity-60 flex items-center gap-1"><Users size={12}/> 서재</label>
+        <div className={`rounded-2xl overflow-hidden border ${currentTheme.border} shadow-sm`}>
+          <div className="px-3 pt-2.5 pb-2 flex justify-between items-center" style={{background: theme==='sepia'?'rgba(211,84,0,0.07)':theme==='dark'?'rgba(96,165,250,0.12)':'rgba(37,99,235,0.06)'}}>
+            <div className="flex items-center gap-1.5">
+              <div className={`w-5 h-5 rounded-full ${currentTheme.primaryBg} flex items-center justify-center`}><Users size={10} className="text-white"/></div>
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-50">서재</span>
+            </div>
             <div className="flex gap-1">
-              <button onClick={() => { setShowAddUser(true); setNewUserName(''); }} className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded font-bold hover:bg-blue-200">+ 추가</button>
-              {Object.keys(databases).length > 1 && <button onClick={handleDeleteLibrary} className="text-[10px] bg-red-100 text-red-500 px-1.5 py-0.5 rounded font-bold hover:bg-red-200" title="서재 삭제"><Trash2 size={10}/></button>}
+              <button onClick={() => { setShowAddUser(true); setNewUserName(''); }} className={`text-[10px] ${currentTheme.primary} font-black px-2 py-0.5 rounded-full bg-black/5 hover:bg-black/10 transition-colors`}>+ 추가</button>
+              {Object.keys(databases).length > 1 && <button onClick={handleDeleteLibrary} className="text-[10px] text-red-400 px-1.5 py-0.5 rounded-full bg-red-50 hover:bg-red-100 transition-colors" title="서재 삭제"><Trash2 size={9}/></button>}
             </div>
           </div>
+          <div className="px-3 py-2.5">
           {showAddUser ? (
             <div className="flex flex-col gap-2">
-              <input autoFocus value={newUserName} onChange={e=>setNewUserName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&confirmAddUser()} className="text-xs p-1.5 rounded border w-full" placeholder="이름"/>
-              <div className="flex gap-1"><button onClick={confirmAddUser} className="flex-1 bg-blue-500 text-white text-xs py-1 rounded">확인</button><button onClick={()=>setShowAddUser(false)} className="flex-1 bg-gray-300 text-black text-xs py-1 rounded">취소</button></div>
+              <input autoFocus value={newUserName} onChange={e=>setNewUserName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&confirmAddUser()} className="text-xs p-1.5 rounded-lg border w-full" placeholder="이름"/>
+              <div className="flex gap-1"><button onClick={confirmAddUser} className="flex-1 bg-blue-500 text-white text-xs py-1 rounded-lg font-bold">확인</button><button onClick={()=>setShowAddUser(false)} className="flex-1 bg-black/10 text-xs py-1 rounded-lg">취소</button></div>
             </div>
           ) : (
-            <select value={currentLibrary} onChange={(e) => loadLibrary(e.target.value)} className={`w-full bg-transparent font-bold outline-none cursor-pointer ${currentTheme.primary}`}>
+            <select value={currentLibrary} onChange={(e) => loadLibrary(e.target.value)} className={`w-full bg-transparent font-black text-sm outline-none cursor-pointer ${currentTheme.primary}`}>
               {Object.keys(databases).map(owner => <option key={owner} value={owner} className="text-gray-900">{owner}</option>)}
             </select>
           )}
+          </div>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-4 scrollbar-hide">
@@ -866,21 +871,35 @@ export default function App() {
                 <h2 className="text-3xl font-black mb-8 flex items-center gap-2">{currentLibrary} 님의 도서 <span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{books.length}권</span></h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {books.map(book => (
-                    <motion.div key={book.id} onClick={() => { setSelectedBook(book); setViewMode('chapters'); }} onContextMenu={e => handleContextMenu(e, book)} className={`relative p-6 rounded-3xl border ${currentTheme.border} ${currentTheme.panel} shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all cursor-pointer group flex flex-col h-64`}>
-                      <div className="flex justify-between items-start mb-4">
-                        <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${book.status==='읽는 중'?'bg-blue-100 text-blue-600':'bg-black/5'}`}>{book.status}</span>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={(e)=>{e.stopPropagation();setEditingBookId(book.id)}} className="p-1 text-gray-400 hover:text-blue-500" title="이름 변경"><Edit3 size={14}/></button>
-                          <button onClick={(e)=>{e.stopPropagation();if(window.confirm(`"${book.title}"을 삭제하시겠습니까?`))handleDeleteBook(book.id);}} className="p-1 text-gray-400 hover:text-red-500" title="삭제"><Trash2 size={14}/></button>
+                    <motion.div key={book.id} onClick={() => { setSelectedBook(book); setViewMode('chapters'); }} onContextMenu={e => handleContextMenu(e, book)} className={`relative rounded-3xl border ${currentTheme.border} shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all cursor-pointer group flex flex-col h-64 overflow-hidden`}>
+                      {/* 표지 영역 */}
+                      <div className="relative h-32 shrink-0 overflow-hidden">
+                        {book.coverUrl
+                          ? <img src={book.coverUrl} className="w-full h-full object-cover" alt={book.title}/>
+                          : <div className={`w-full h-full ${currentTheme.primaryLight} flex items-center justify-center`}><Book size={38} className={`${currentTheme.primary} opacity-20`}/></div>
+                        }
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/25 to-transparent"/>
+                        <div className="absolute top-2 left-2">
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm ${book.status==='읽는 중'?'bg-blue-500/90 text-white':'bg-black/35 text-white'}`}>{book.status}</span>
+                        </div>
+                        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={(e)=>{e.stopPropagation();setEditingBookId(book.id)}} className="p-1 rounded-full bg-white/80 text-gray-600 hover:text-blue-500 shadow-sm" title="이름 변경"><Edit3 size={11}/></button>
+                          <button onClick={(e)=>{e.stopPropagation();if(window.confirm(`"${book.title}"을 삭제하시겠습니까?`))handleDeleteBook(book.id);}} className="p-1 rounded-full bg-white/80 text-gray-600 hover:text-red-500 shadow-sm" title="삭제"><Trash2 size={11}/></button>
                         </div>
                       </div>
-                      <div className="flex-1">
-                        {editingBookId === book.id ? <input autoFocus defaultValue={book.title} onClick={e=>e.stopPropagation()} onBlur={e=>handleRename(book.id, e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleRename(book.id, e.target.value)} className="text-2xl font-black w-full bg-transparent border-b-2 border-blue-500 outline-none"/> : <div className="flex items-center gap-2 group/edit"><h3 className="text-2xl font-black line-clamp-2">{book.title}</h3><button onClick={(e)=>{e.stopPropagation();setEditingBookId(book.id)}} className="opacity-0 group-hover/edit:opacity-100 text-gray-400 hover:text-blue-500"><Edit3 size={16}/></button></div>}
-                        <p className="mt-2 text-sm opacity-60">{book.author || '저자 미상'} · {book.totalPages}p</p>
-                      </div>
-                      <div className="mt-4">
-                        <div className="flex justify-between items-center mb-1"><span className="text-xs opacity-50">진행률</span><span className={`text-xs font-bold ${currentTheme.primary}`}>{calculateProgress(book.id)}%</span></div>
-                        <div className="w-full h-1.5 bg-black/10 rounded-full overflow-hidden"><div style={{width: `${calculateProgress(book.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div></div>
+                      {/* 정보 영역 */}
+                      <div className={`flex-1 px-4 py-3 flex flex-col justify-between ${currentTheme.panel}`}>
+                        <div>
+                          {editingBookId === book.id
+                            ? <input autoFocus defaultValue={book.title} onClick={e=>e.stopPropagation()} onBlur={e=>handleRename(book.id, e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleRename(book.id, e.target.value)} className="text-sm font-black w-full bg-transparent border-b-2 border-blue-500 outline-none"/>
+                            : <h3 className="text-sm font-black line-clamp-2 leading-snug">{book.title}</h3>
+                          }
+                          <p className="mt-0.5 text-xs opacity-50 truncate">{book.author || '저자 미상'} · {book.totalPages}p</p>
+                        </div>
+                        <div>
+                          <div className="flex justify-between items-center mb-1"><span className="text-[10px] opacity-40">진행률</span><span className={`text-[10px] font-bold ${currentTheme.primary}`}>{calculateProgress(book.id)}%</span></div>
+                          <div className="w-full h-1 bg-black/10 rounded-full overflow-hidden"><div style={{width: `${calculateProgress(book.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div></div>
+                        </div>
                       </div>
                     </motion.div>
                   ))}
@@ -890,6 +909,11 @@ export default function App() {
             )}
             {viewMode === 'chapters' && selectedBook && (
               <motion.div key="chapters" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-4xl mx-auto">
+                <div className="flex justify-end mb-3">
+                  <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
+                    <ChevronLeft size={13}/> 서재로
+                  </button>
+                </div>
                 <div className="mb-8 flex gap-8">
                   <label className={`w-32 h-44 rounded-xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center cursor-pointer hover:opacity-70 overflow-hidden relative ${selectedBook.coverUrl?'':'bg-black/5'}`}>
                     {selectedBook.coverUrl ? <img src={selectedBook.coverUrl} className="w-full h-full object-cover" alt="cover"/> : <span className="text-xs opacity-50 text-center p-2">표지 추가</span>}
@@ -941,6 +965,11 @@ export default function App() {
             )}
             {viewMode === 'details' && selectedChapter && (
               <motion.div key="details" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
+                <div className="flex justify-end mb-3">
+                  <button onClick={() => {setViewMode('chapters'); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
+                    <ChevronLeft size={13}/> 뒤로
+                  </button>
+                </div>
                 <div className="space-y-3">
                   <h2 className="text-3xl font-black mb-6 flex items-center gap-2"><span className={currentTheme.primary}>#{selectedChapter.index}</span> <input value={selectedChapter.title} onChange={e=>{const n=e.target.value;setSelectedChapter({...selectedChapter,title:n});setChapters(chapters.map(c=>c.id===selectedChapter.id?{...c,title:n}:c))}} className="bg-transparent outline-none w-full"/></h2>
                   {details.filter(d=>d.chapterId===selectedChapter.id).map(detail=>(
@@ -958,6 +987,11 @@ export default function App() {
             )}
             {viewMode === 'editor' && selectedDetail && (
               <motion.div key="editor" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
+                <div className="flex justify-end mb-3">
+                  <button onClick={() => {setViewMode('details'); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
+                    <ChevronLeft size={13}/> 뒤로
+                  </button>
+                </div>
                 <div className={`flex-1 rounded-3xl border ${currentTheme.border} ${currentTheme.panel} p-8 flex flex-col gap-4 shadow-sm overflow-y-auto`}>
                   <div className={`flex gap-4 text-sm items-center bg-black/5 p-2 rounded-lg w-fit ${theme === 'dark' ? 'text-white' : ''}`}>
                     <span className="opacity-50 font-bold">PAGE:</span>
