@@ -71,6 +71,8 @@ export default function App() {
   const [socialData, setSocialData] = useState([]);
   const [isSocialLoading, setIsSocialLoading] = useState(false);
   const [socialViewUserId, setSocialViewUserId] = useState(null);
+  const [socialViewBookId, setSocialViewBookId] = useState(null);
+  const [socialViewChapterId, setSocialViewChapterId] = useState(null);
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -614,6 +616,11 @@ export default function App() {
     loadSocialData();
   };
 
+  // 공개 수준 비교 헬퍼: private(0) < friends(1) < public(2)
+  const VIS = { private: 0, friends: 1, public: 2 };
+  const canSee = (vis, friendStatus) => vis === 'public' || (vis === 'friends' && friendStatus === 'accepted');
+  const effectiveVis = (parent, child) => VIS[child] < VIS[parent] ? child : parent;
+
   const loadSocialData = async () => {
     setIsSocialLoading(true);
     try {
@@ -628,17 +635,29 @@ export default function App() {
           const save = (saves || []).find(s => s.id === u.id);
           const friendEntry = myFriends.find(f => f.id === u.id);
           const friendStatus = friendEntry?.status || 'none';
-          const allBooks = [];
+          const allBooks = [], allChapters = [], allDetails = [];
           if (save?.data) {
             Object.entries(save.data).forEach(([key, lib]) => {
               if (key.startsWith('__') || !lib?.books) return;
               lib.books.forEach(b => {
-                const vis = b.visibility || 'private';
-                if (vis === 'public' || (vis === 'friends' && friendStatus === 'accepted')) allBooks.push(b);
+                const bookVis = b.visibility || 'private';
+                if (!canSee(bookVis, friendStatus)) return;
+                allBooks.push(b);
+                // 챕터 수집
+                (lib.chapters || []).filter(c => c.bookId === b.id).forEach(c => {
+                  const chVis = effectiveVis(bookVis, c.visibility || bookVis);
+                  if (!canSee(chVis, friendStatus)) return;
+                  allChapters.push({ ...c, _vis: chVis });
+                  // 세부 노트 수집
+                  (lib.details || []).filter(d => d.chapterId === c.id).forEach(d => {
+                    const dVis = effectiveVis(chVis, d.visibility || chVis);
+                    if (canSee(dVis, friendStatus)) allDetails.push(d);
+                  });
+                });
               });
             });
           }
-          return { id: u.id, displayName: u.display_name, books: allBooks, friendStatus };
+          return { id: u.id, displayName: u.display_name, books: allBooks, chapters: allChapters, details: allDetails, friendStatus };
         });
       setSocialData(result);
     } catch (err) {
@@ -1063,6 +1082,10 @@ export default function App() {
                     <motion.div key={chapter.id} onClick={() => { setSelectedChapter(chapter); setViewMode('details'); }} className={`p-5 rounded-2xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-lg transition-all cursor-pointer flex items-center justify-between group`}>
                       <div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-lg flex items-center justify-center font-black ${currentTheme.primaryLight} ${currentTheme.primary}`}>{chapter.index}</div><span className="font-bold text-lg">{chapter.title}</span></div>
                       <div className="flex items-center gap-2">
+                        {/* 챕터 공개 설정 */}
+                        <button onClick={(e)=>{e.stopPropagation();const v=chapter.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setChapters(chapters.map(c=>c.id===chapter.id?{...c,visibility:next[v]}:c));}} title="챕터 공개 설정" className={`p-1 rounded-full transition-all ${(chapter.visibility&&chapter.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
+                          {chapter.visibility==='private'?<Lock size={13} className="text-red-400"/>:chapter.visibility==='friends'?<Users size={13} className="text-blue-400"/>:<Globe size={13} className="text-gray-400"/>}
+                        </button>
                         <button onClick={(e) => handleDeleteChapter(e, chapter.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={16}/></button>
                         <ChevronRight size={20} className="opacity-30"/>
                       </div>
@@ -1086,6 +1109,10 @@ export default function App() {
                       <span className="font-bold">{detail.title}</span>
                       <div className="flex items-center gap-3">
                         <span className="text-xs opacity-50">{detail.startPage}-{detail.endPage}p</span>
+                        {/* 노트 공개 설정 */}
+                        <button onClick={(e)=>{e.stopPropagation();const v=detail.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setDetails(details.map(d=>d.id===detail.id?{...d,visibility:next[v]}:d));}} title="노트 공개 설정" className={`p-1 rounded-full transition-all ${(detail.visibility&&detail.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
+                          {detail.visibility==='private'?<Lock size={12} className="text-red-400"/>:detail.visibility==='friends'?<Users size={12} className="text-blue-400"/>:<Globe size={12} className="text-gray-400"/>}
+                        </button>
                         <button onClick={(e) => handleDeleteDetail(e, detail.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={15}/></button>
                       </div>
                     </div>
@@ -1194,93 +1221,158 @@ export default function App() {
         </div>
       )}
       {showSocialPanel && (() => {
+        const closeAll = () => { setShowSocialPanel(false); setSocialViewUserId(null); setSocialViewBookId(null); setSocialViewChapterId(null); };
         const viewUser = socialData.find(u => u.id === socialViewUserId);
+        const viewBook = viewUser?.books.find(b => b.id === socialViewBookId);
+        const viewChapter = viewUser?.chapters?.find(c => c.id === socialViewChapterId);
         const pendingReceived = (databasesRef.current?.__meta?.friends || []).filter(f => f.status === 'received');
+
+        // 헤더 뒤로가기 핸들러
+        const handleBack = () => {
+          if (socialViewChapterId) { setSocialViewChapterId(null); return; }
+          if (socialViewBookId) { setSocialViewBookId(null); return; }
+          setSocialViewUserId(null);
+        };
+
+        // 헤더 제목 결정
+        const headerTitle = viewChapter ? viewChapter.title
+          : viewBook ? viewBook.title
+          : viewUser ? viewUser.displayName
+          : null;
+
         return (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => { setShowSocialPanel(false); setSocialViewUserId(null); }}>
-            <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl w-full max-w-md mx-4 max-h-[85vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={closeAll}>
+            <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
+
               {/* 헤더 */}
               <div className={`px-6 py-4 border-b ${currentTheme.border} flex items-center gap-2 shrink-0`}>
-                {viewUser && <button onClick={() => setSocialViewUserId(null)} className="p-1 rounded-full hover:bg-black/5 mr-1"><ChevronLeft size={18}/></button>}
-                <div className="flex-1 font-black text-base flex items-center gap-2">
-                  {viewUser ? (
-                    <><div className={`w-7 h-7 rounded-full ${currentTheme.primaryBg} flex items-center justify-center text-white text-xs font-black shrink-0`}>{viewUser.displayName[0]}</div>{viewUser.displayName}</>
+                {(socialViewUserId || socialViewBookId || socialViewChapterId) && (
+                  <button onClick={handleBack} className="p-1.5 rounded-full hover:bg-black/5 mr-1 shrink-0"><ChevronLeft size={18}/></button>
+                )}
+                <div className="flex-1 font-black text-base flex items-center gap-2 min-w-0">
+                  {headerTitle ? (
+                    <><div className={`w-7 h-7 rounded-full ${currentTheme.primaryBg} flex items-center justify-center text-white text-xs font-black shrink-0`}>{(viewUser?.displayName||'?')[0]}</div><span className="truncate">{headerTitle}</span></>
                   ) : <><Users size={18}/> 다른 독자</>}
                 </div>
-                {pendingReceived.length > 0 && !viewUser && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-500 text-white">{pendingReceived.length}개 요청</span>
+                {pendingReceived.length > 0 && !socialViewUserId && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-500 text-white shrink-0">{pendingReceived.length}개 요청</span>
                 )}
-                <button onClick={() => { setShowSocialPanel(false); setSocialViewUserId(null); }} className="text-xs opacity-40 hover:opacity-100 px-2 py-1 rounded-lg hover:bg-black/5 ml-1">닫기</button>
+                <button onClick={closeAll} className="text-xs opacity-40 hover:opacity-100 px-2 py-1 rounded-lg hover:bg-black/5 ml-1 shrink-0">닫기</button>
               </div>
 
               <div className="flex-1 overflow-y-auto p-6">
                 {isSocialLoading ? (
                   <div className="flex items-center justify-center h-32 text-sm opacity-40 animate-pulse">불러오는 중...</div>
-                ) : viewUser ? (
-                  /* 프로필 뷰 */
+
+                ) : socialViewChapterId && viewChapter ? (
+                  /* ── 레벨 3: 노트 읽기 뷰 ── */
+                  <div className="space-y-4">
+                    {(() => {
+                      const chapterDetails = viewUser.details?.filter(d => d.chapterId === socialViewChapterId) || [];
+                      if (chapterDetails.length === 0) return <div className="text-sm opacity-40 text-center py-10">공개된 노트가 없습니다.</div>;
+                      return chapterDetails.map((d, i) => (
+                        <div key={i} className={`p-5 rounded-2xl border ${currentTheme.border}`}>
+                          <div className="flex items-center justify-between mb-3">
+                            <h3 className="font-black text-base">{d.title}</h3>
+                            <span className="text-xs opacity-40">{d.startPage}–{d.endPage}p</span>
+                          </div>
+                          <p className="text-sm leading-relaxed opacity-80 whitespace-pre-wrap">{d.content || '(내용 없음)'}</p>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+
+                ) : socialViewBookId && viewBook ? (
+                  /* ── 레벨 2: 챕터 목록 ── */
                   <div>
                     <div className="flex items-center gap-4 mb-6">
-                      <div className={`w-14 h-14 rounded-2xl ${currentTheme.primaryBg} flex items-center justify-center text-white text-2xl font-black`}>{viewUser.displayName[0]}</div>
-                      <div className="flex-1">
-                        <div className="font-black text-lg">{viewUser.displayName}</div>
-                        <div className="text-xs opacity-40">공개 책 {viewUser.books.length}권</div>
+                      {viewBook.coverUrl
+                        ? <img src={viewBook.coverUrl} className="w-14 h-20 object-contain rounded-lg shadow" alt=""/>
+                        : <div className={`w-14 h-20 rounded-lg ${currentTheme.primaryLight} flex items-center justify-center`}><Book size={22} className="opacity-30"/></div>
+                      }
+                      <div>
+                        <div className="font-black text-lg leading-snug">{viewBook.title}</div>
+                        {viewBook.author && <div className="text-sm opacity-50 mt-0.5">{viewBook.author}</div>}
                       </div>
-                      {/* 친구 버튼 */}
-                      {viewUser.friendStatus === 'none' && (
-                        <button onClick={() => sendFriendRequest(viewUser.id)} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-blue-500 text-white hover:bg-blue-600 transition-colors">
-                          <UserPlus size={13}/> 친구 추가
-                        </button>
-                      )}
-                      {viewUser.friendStatus === 'sent' && (
-                        <span className="text-xs font-bold px-3 py-2 rounded-xl bg-black/5 opacity-50">요청 보냄</span>
-                      )}
-                      {viewUser.friendStatus === 'received' && (
-                        <button onClick={() => acceptFriendRequest(viewUser.id)} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-green-500 text-white hover:bg-green-600 transition-colors">
-                          <UserCheck size={13}/> 수락하기
-                        </button>
-                      )}
-                      {viewUser.friendStatus === 'accepted' && (
-                        <span className="flex items-center gap-1 text-xs font-bold px-3 py-2 rounded-xl bg-green-50 text-green-600 border border-green-200">
-                          <UserCheck size={13}/> 친구
-                        </span>
-                      )}
                     </div>
-                    <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-2">읽은 책</div>
-                    {viewUser.books.length === 0 ? (
-                      <div className="text-sm opacity-40 text-center py-10">
-                        {viewUser.friendStatus === 'accepted' ? '공개된 책이 없습니다.' : '친구가 되면 더 많은 책을 볼 수 있어요.'}
+                    <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-3">챕터 목록</div>
+                    {(() => {
+                      const bookChapters = viewUser.chapters?.filter(c => c.bookId === socialViewBookId) || [];
+                      if (bookChapters.length === 0) return <div className="text-sm opacity-40 text-center py-8">공개된 챕터가 없습니다.</div>;
+                      return (
+                        <div className="space-y-2">
+                          {bookChapters.map((c, i) => {
+                            const noteCount = viewUser.details?.filter(d => d.chapterId === c.id).length || 0;
+                            return (
+                              <div key={i} onClick={() => setSocialViewChapterId(c.id)} className={`flex items-center gap-4 p-4 rounded-xl border ${currentTheme.border} hover:border-blue-300 cursor-pointer hover:shadow-sm transition-all group`}>
+                                <div className={`w-9 h-9 rounded-lg flex items-center justify-center font-black text-sm ${currentTheme.primaryLight} ${currentTheme.primary} shrink-0`}>{c.index}</div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-bold">{c.title}</div>
+                                  <div className="text-xs opacity-40">노트 {noteCount}개</div>
+                                </div>
+                                <ChevronRight size={16} className="opacity-30"/>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                ) : socialViewUserId && viewUser ? (
+                  /* ── 레벨 1: 프로필 + 책 목록 ── */
+                  <div>
+                    <div className="flex items-center gap-4 mb-6">
+                      <div className={`w-16 h-16 rounded-2xl ${currentTheme.primaryBg} flex items-center justify-center text-white text-3xl font-black`}>{viewUser.displayName[0]}</div>
+                      <div className="flex-1">
+                        <div className="font-black text-xl">{viewUser.displayName}</div>
+                        <div className="text-xs opacity-40 mt-0.5">공개 책 {viewUser.books.length}권</div>
                       </div>
+                      {viewUser.friendStatus === 'none' && <button onClick={() => sendFriendRequest(viewUser.id)} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-blue-500 text-white hover:bg-blue-600"><UserPlus size={13}/> 친구 추가</button>}
+                      {viewUser.friendStatus === 'sent' && <span className="text-xs font-bold px-3 py-2 rounded-xl bg-black/5 opacity-50">요청 보냄</span>}
+                      {viewUser.friendStatus === 'received' && <button onClick={() => acceptFriendRequest(viewUser.id)} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-green-500 text-white hover:bg-green-600"><UserCheck size={13}/> 수락하기</button>}
+                      {viewUser.friendStatus === 'accepted' && <span className="flex items-center gap-1 text-xs font-bold px-3 py-2 rounded-xl bg-green-50 text-green-600 border border-green-200"><UserCheck size={13}/> 친구</span>}
+                    </div>
+                    <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-3">읽은 책</div>
+                    {viewUser.books.length === 0 ? (
+                      <div className="text-sm opacity-40 text-center py-10">{viewUser.friendStatus === 'accepted' ? '공개된 책이 없습니다.' : '친구가 되면 더 많은 책을 볼 수 있어요.'}</div>
                     ) : (
-                      <div className="space-y-2">
-                        {viewUser.books.map((b, i) => (
-                          <div key={i} className={`flex items-center gap-3 p-3 rounded-xl border ${currentTheme.border}`}>
-                            {b.coverUrl
-                              ? <img src={b.coverUrl} className="w-8 h-11 object-contain rounded shrink-0" alt=""/>
-                              : <div className={`w-8 h-11 rounded ${currentTheme.primaryLight} flex items-center justify-center shrink-0`}><Book size={12} className="opacity-30"/></div>
-                            }
-                            <div className="flex-1 min-w-0">
-                              <div className="font-bold text-sm truncate">{b.title}</div>
-                              {b.author && <div className="text-xs opacity-40 truncate">{b.author}</div>}
+                      <div className="grid grid-cols-2 gap-3">
+                        {viewUser.books.map((b, i) => {
+                          const chCount = viewUser.chapters?.filter(c => c.bookId === b.id).length || 0;
+                          return (
+                            <div key={i} onClick={() => setSocialViewBookId(b.id)} className={`flex gap-3 p-3 rounded-xl border ${currentTheme.border} hover:border-blue-300 cursor-pointer hover:shadow-sm transition-all`}>
+                              {b.coverUrl
+                                ? <img src={b.coverUrl} className="w-10 h-14 object-contain rounded shrink-0" alt=""/>
+                                : <div className={`w-10 h-14 rounded ${currentTheme.primaryLight} flex items-center justify-center shrink-0`}><Book size={14} className="opacity-30"/></div>
+                              }
+                              <div className="flex-1 min-w-0 flex flex-col justify-between">
+                                <div>
+                                  <div className="font-bold text-xs leading-snug line-clamp-2">{b.title}</div>
+                                  {b.author && <div className="text-[10px] opacity-40 truncate mt-0.5">{b.author}</div>}
+                                </div>
+                                <div className="flex items-center justify-between mt-1">
+                                  <span className="text-[10px] opacity-40">챕터 {chCount}개</span>
+                                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${b.visibility==='public'?'bg-green-100 text-green-600':'bg-blue-100 text-blue-600'}`}>{b.visibility==='public'?'공개':'친구'}</span>
+                                </div>
+                              </div>
                             </div>
-                            <div className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${b.visibility==='public'?'bg-green-100 text-green-600':'bg-blue-100 text-blue-600'}`}>
-                              {b.visibility==='public'?'공개':'친구'}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
+
                 ) : (
-                  /* 유저 목록 */
+                  /* ── 레벨 0: 유저 목록 ── */
                   <div className="space-y-2">
-                    {/* 친구 요청 알림 */}
                     {pendingReceived.map(req => {
                       const reqUser = socialData.find(u => u.id === req.id);
                       if (!reqUser) return null;
                       return (
                         <div key={req.id} className="flex items-center gap-3 p-3 rounded-xl bg-amber-50 border border-amber-200">
                           <div className="w-8 h-8 rounded-full bg-amber-400 flex items-center justify-center text-white text-sm font-black shrink-0">{reqUser.displayName[0]}</div>
-                          <div className="flex-1 text-sm"><span className="font-bold">{reqUser.displayName}</span><span className="opacity-60"> 님이 친구 요청을 보냈습니다</span></div>
+                          <div className="flex-1 text-sm min-w-0"><span className="font-bold">{reqUser.displayName}</span><span className="opacity-60"> 님이 친구 요청을 보냈습니다</span></div>
                           <button onClick={() => acceptFriendRequest(req.id)} className="text-[11px] font-bold px-2 py-1 rounded-lg bg-green-500 text-white hover:bg-green-600 shrink-0">수락</button>
                         </div>
                       );
@@ -1288,10 +1380,10 @@ export default function App() {
                     {socialData.length === 0 ? (
                       <div className="text-center text-sm opacity-40 py-10">다른 독자가 없습니다.</div>
                     ) : socialData.map(user => (
-                      <div key={user.id} onClick={() => setSocialViewUserId(user.id)} className={`flex items-center gap-3 p-3 rounded-xl border ${currentTheme.border} hover:border-blue-300 cursor-pointer hover:shadow-sm transition-all`}>
-                        <div className={`w-10 h-10 rounded-xl ${currentTheme.primaryBg} flex items-center justify-center text-white font-black shrink-0`}>{user.displayName[0]}</div>
+                      <div key={user.id} onClick={() => { setSocialViewUserId(user.id); setSocialViewBookId(null); setSocialViewChapterId(null); }} className={`flex items-center gap-3 p-3 rounded-xl border ${currentTheme.border} hover:border-blue-300 cursor-pointer hover:shadow-sm transition-all`}>
+                        <div className={`w-11 h-11 rounded-xl ${currentTheme.primaryBg} flex items-center justify-center text-white font-black text-lg shrink-0`}>{user.displayName[0]}</div>
                         <div className="flex-1 min-w-0">
-                          <div className="font-bold text-sm">{user.displayName}</div>
+                          <div className="font-bold">{user.displayName}</div>
                           <div className="text-xs opacity-40">공개 책 {user.books.length}권</div>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
