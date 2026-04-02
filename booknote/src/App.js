@@ -75,6 +75,12 @@ export default function App() {
   const [socialViewUserId, setSocialViewUserId] = useState(null);
   const [socialViewBookId, setSocialViewBookId] = useState(null);
   const [socialViewChapterId, setSocialViewChapterId] = useState(null);
+  const [authEduRole, setAuthEduRole] = useState('student'); // 'student' | 'teacher'
+  const [classroomData, setClassroomData] = useState([]);
+  const [isClassroomLoading, setIsClassroomLoading] = useState(false);
+  const [classroomViewStudentId, setClassroomViewStudentId] = useState(null);
+  const [classroomViewBookId, setClassroomViewBookId] = useState(null);
+  const [classroomViewChapterId, setClassroomViewChapterId] = useState(null);
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -212,7 +218,7 @@ export default function App() {
       if (authType === 'education') {
         const code = authClassCode.trim();
         const baseDb = { [name]: { books: [], chapters: [], details: [], customGenres: [] } };
-        const updatedDb = { ...baseDb, __meta: { friends: [], mode: 'education', classCode: code } };
+        const updatedDb = { ...baseDb, __meta: { friends: [], mode: 'education', classCode: code, role: authEduRole } };
         setDatabases(updatedDb);
         localStorage.setItem('booknote_web_final', JSON.stringify(updatedDb));
         await supabase.from('booknote_saves').upsert({ id: name, data: updatedDb });
@@ -678,6 +684,46 @@ export default function App() {
     }
   };
 
+  const loadClassroomData = async () => {
+    setIsClassroomLoading(true);
+    try {
+      const myClassCode = databasesRef.current?.__meta?.classCode;
+      if (!myClassCode) { setIsClassroomLoading(false); return; }
+      const [{ data: users }, { data: saves }] = await Promise.all([
+        supabase.from('booknote_users').select('id, display_name'),
+        supabase.from('booknote_saves').select('id, data')
+      ]);
+      const result = (saves || [])
+        .filter(s => s.id !== currentUser?.id && s.data?.__meta?.classCode === myClassCode && s.data?.__meta?.role !== 'teacher')
+        .map(s => {
+          const user = (users || []).find(u => u.id === s.id);
+          const allBooks = [], allChapters = [], allDetails = [];
+          Object.entries(s.data || {}).forEach(([key, lib]) => {
+            if (key.startsWith('__') || !lib?.books) return;
+            allBooks.push(...lib.books);
+            allChapters.push(...(lib.chapters || []));
+            allDetails.push(...(lib.details || []));
+          });
+          return { id: s.id, displayName: user?.display_name || s.id, books: allBooks, chapters: allChapters, details: allDetails };
+        });
+      setClassroomData(result);
+    } catch (err) {
+      console.error('학급 데이터 로딩 실패:', err);
+    } finally {
+      setIsClassroomLoading(false);
+    }
+  };
+
+  // 교사 계정 여부
+  const isTeacher = databases?.__meta?.role === 'teacher';
+
+  // 교사 로그인 시 학급 현황 자동 로드
+  useEffect(() => {
+    if (isTeacher && !isAppLoading && classroomData.length === 0 && !isClassroomLoading) {
+      loadClassroomData();
+    }
+  }, [isTeacher, isAppLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const usedGenres = [...new Set([...customGenres, ...books.flatMap(b => Array.isArray(b.category) ? b.category : [b.category])])].filter(g => g && g !== '');
   const handleDragStart = (e, bookId) => { setDraggedBookId(bookId); e.dataTransfer.effectAllowed = "move"; };
   const handleDragOver = (e, genre) => { e.preventDefault(); if (dragOverGenre !== genre) setDragOverGenre(genre); };
@@ -715,10 +761,16 @@ export default function App() {
             <p className="text-xs opacity-40 mt-1">{isEdu ? '🎓 교육 버전' : '☁️ 나만의 클라우드 서재'}</p>
           </div>
           {/* 버전 선택 */}
-          <div className={`flex rounded-xl overflow-hidden border-2 mb-5 ${currentTheme.border}`}>
+          <div className={`flex rounded-xl overflow-hidden border-2 mb-3 ${currentTheme.border}`}>
             <button onClick={() => { setAuthType('personal'); setAuthError(''); }} className={`flex-1 py-2.5 text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${!isEdu ? `${currentTheme.primaryBg} text-white` : `${currentTheme.text} opacity-60 hover:opacity-100`}`}><BookOpen size={14}/> 일반</button>
             <button onClick={() => { setAuthType('education'); setAuthError(''); }} className={`flex-1 py-2.5 text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${isEdu ? 'bg-emerald-600 text-white' : `${currentTheme.text} opacity-60 hover:opacity-100`}`}><GraduationCap size={14}/> 교육</button>
           </div>
+          {isEdu && isSignup && (
+            <div className="flex rounded-xl overflow-hidden border-2 mb-4 border-emerald-200">
+              <button onClick={() => { setAuthEduRole('student'); setAuthError(''); }} className={`flex-1 py-2 text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${authEduRole==='student' ? 'bg-emerald-500 text-white' : `${currentTheme.text} opacity-60 hover:opacity-100`}`}><Book size={13}/> 학생</button>
+              <button onClick={() => { setAuthEduRole('teacher'); setAuthError(''); }} className={`flex-1 py-2 text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${authEduRole==='teacher' ? 'bg-emerald-700 text-white' : `${currentTheme.text} opacity-60 hover:opacity-100`}`}><GraduationCap size={13}/> 교사</button>
+            </div>
+          )}
 
           {!isSupabaseConfigured && (
             <div className="mb-4 text-xs text-amber-800 bg-amber-100 border border-amber-300 rounded-xl px-3 py-2.5 leading-relaxed">
@@ -773,12 +825,12 @@ export default function App() {
             )}
             {isSignup && isEdu && (
               <div>
-                <label className="text-xs font-bold mb-1 block text-emerald-600 flex items-center gap-1"><GraduationCap size={11}/> 클래스 코드 <span className="opacity-50 font-normal">(선택)</span></label>
+                <label className="text-xs font-bold mb-1 block text-emerald-600 flex items-center gap-1"><GraduationCap size={11}/> {authEduRole==='teacher'?'학급 코드 설정':'학급 코드 입력'} <span className="opacity-50 font-normal">(선택)</span></label>
                 <input
                   value={authClassCode}
                   onChange={e => { setAuthClassCode(e.target.value); setAuthError(''); }}
                   onKeyDown={e => e.key === 'Enter' && handleSignup()}
-                  placeholder="선생님께 받은 코드를 입력하세요"
+                  placeholder={authEduRole==='teacher'?'학생들에게 알려줄 코드를 정하세요':'선생님께 받은 코드를 입력하세요'}
                   className={`w-full p-3 rounded-xl border-2 border-emerald-300 bg-transparent outline-none focus:border-emerald-500 text-sm`}
                 />
               </div>
@@ -794,7 +846,7 @@ export default function App() {
             disabled={isAuthLoading}
             className={`w-full mt-5 py-3 rounded-xl ${isEdu ? 'bg-emerald-600 hover:bg-emerald-700' : currentTheme.primaryBg} text-white font-bold shadow transition-colors disabled:opacity-50`}
           >
-            {isAuthLoading ? '처리 중...' : isSignup ? (isEdu ? '🎓 교육 계정 만들기' : '회원가입') : (isEdu ? '🎓 교육 버전 로그인' : '로그인')}
+            {isAuthLoading ? '처리 중...' : isSignup ? (isEdu ? (authEduRole==='teacher'?'🏫 교사 계정 만들기':'🎓 학생 계정 만들기') : '회원가입') : (isEdu ? '🎓 교육 버전 로그인' : '로그인')}
           </button>
         </motion.div>
       </div>
@@ -1013,6 +1065,141 @@ export default function App() {
           <AnimatePresence mode="wait">
             {viewMode === 'shelf' && (
               <motion.div key="shelf" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-6xl mx-auto">
+                {isTeacher ? (
+                  /* ── 교사 학급 현황 뷰 ── */
+                  <div>
+                    {classroomViewChapterId ? (
+                      /* 레벨 3: 학생 노트 읽기 */
+                      <div className="max-w-3xl">
+                        <button onClick={() => setClassroomViewChapterId(null)} className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100 transition-all mb-6`}><ChevronLeft size={13}/> 챕터 목록으로</button>
+                        <div className="space-y-4">
+                          {(() => {
+                            const student = classroomData.find(s => s.id === classroomViewStudentId);
+                            const chDets = student?.details?.filter(d => d.chapterId === classroomViewChapterId) || [];
+                            if (chDets.length === 0) return <div className="text-sm opacity-40 text-center py-10">작성된 노트가 없습니다.</div>;
+                            return chDets.map((d, i) => (
+                              <div key={i} className={`p-5 rounded-2xl border ${currentTheme.border}`}>
+                                <div className="flex items-center justify-between mb-3">
+                                  <h3 className="font-black text-base">{d.title}</h3>
+                                  <span className="text-xs opacity-40">{d.startPage}–{d.endPage}p</span>
+                                </div>
+                                <p className="text-sm leading-relaxed opacity-80 whitespace-pre-wrap">{d.content || '(내용 없음)'}</p>
+                              </div>
+                            ));
+                          })()}
+                        </div>
+                      </div>
+                    ) : classroomViewBookId ? (
+                      /* 레벨 2: 책의 챕터 목록 */
+                      <div className="max-w-3xl">
+                        <button onClick={() => setClassroomViewBookId(null)} className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100 transition-all mb-6`}><ChevronLeft size={13}/> 책 목록으로</button>
+                        {(() => {
+                          const student = classroomData.find(s => s.id === classroomViewStudentId);
+                          const book = student?.books.find(b => b.id === classroomViewBookId);
+                          const bookChapters = student?.chapters?.filter(c => c.bookId === classroomViewBookId) || [];
+                          return (
+                            <div>
+                              <div className="flex items-center gap-4 mb-6">
+                                {book?.coverUrl ? <img src={book.coverUrl} className="w-12 h-16 object-contain rounded-lg shadow" alt=""/> : <div className={`w-12 h-16 rounded-lg ${currentTheme.primaryLight} flex items-center justify-center`}><Book size={20} className="opacity-30"/></div>}
+                                <div>
+                                  <div className="font-black text-xl">{book?.title}</div>
+                                  {book?.author && <div className="text-sm opacity-50 mt-0.5">{book.author}</div>}
+                                </div>
+                              </div>
+                              <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-3">챕터 목록</div>
+                              {bookChapters.length === 0 ? <div className="text-sm opacity-40 text-center py-8">작성된 챕터가 없습니다.</div> : (
+                                <div className="space-y-2">
+                                  {bookChapters.map((c, i) => {
+                                    const noteCount = student?.details?.filter(d => d.chapterId === c.id).length || 0;
+                                    return (
+                                      <div key={i} onClick={() => setClassroomViewChapterId(c.id)} className={`flex items-center gap-4 p-4 rounded-xl border ${currentTheme.border} hover:border-emerald-300 cursor-pointer hover:shadow-sm transition-all`}>
+                                        <div className={`w-9 h-9 rounded-lg flex items-center justify-center font-black text-sm bg-emerald-50 text-emerald-700 shrink-0`}>{c.index}</div>
+                                        <div className="flex-1 min-w-0"><div className="font-bold">{c.title}</div><div className="text-xs opacity-40">노트 {noteCount}개</div></div>
+                                        <ChevronRight size={16} className="opacity-30"/>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : classroomViewStudentId ? (
+                      /* 레벨 1: 학생의 책 목록 */
+                      <div className="max-w-4xl">
+                        <button onClick={() => { setClassroomViewStudentId(null); setClassroomViewBookId(null); }} className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100 transition-all mb-6`}><ChevronLeft size={13}/> 학생 목록으로</button>
+                        {(() => {
+                          const student = classroomData.find(s => s.id === classroomViewStudentId);
+                          if (!student) return null;
+                          return (
+                            <div>
+                              <div className="flex items-center gap-4 mb-8">
+                                <div className={`w-14 h-14 rounded-2xl bg-emerald-600 flex items-center justify-center text-white text-2xl font-black`}>{student.displayName[0]}</div>
+                                <div><div className="font-black text-2xl">{student.displayName}</div><div className="text-sm opacity-40 mt-0.5">책 {student.books.length}권 등록</div></div>
+                              </div>
+                              <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-3">읽은 책</div>
+                              {student.books.length === 0 ? <div className="text-sm opacity-40 text-center py-10">등록된 책이 없습니다.</div> : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                  {student.books.map((b, i) => {
+                                    const chCount = student.chapters?.filter(c => c.bookId === b.id).length || 0;
+                                    const dCount = student.details?.filter(d => student.chapters?.filter(c => c.bookId === b.id).map(c => c.id).includes(d.chapterId)).length || 0;
+                                    return (
+                                      <div key={i} onClick={() => setClassroomViewBookId(b.id)} className={`flex gap-3 p-4 rounded-2xl border ${currentTheme.border} hover:border-emerald-400 cursor-pointer hover:shadow-md transition-all`}>
+                                        {b.coverUrl ? <img src={b.coverUrl} className="w-12 h-16 object-contain rounded shrink-0" alt=""/> : <div className={`w-12 h-16 rounded ${currentTheme.primaryLight} flex items-center justify-center shrink-0`}><Book size={16} className="opacity-30"/></div>}
+                                        <div className="flex-1 min-w-0">
+                                          <div className="font-bold leading-snug line-clamp-2">{b.title}</div>
+                                          {b.author && <div className="text-xs opacity-40 truncate mt-0.5">{b.author}</div>}
+                                          <div className="flex gap-3 mt-2 text-xs opacity-50"><span>챕터 {chCount}개</span><span>노트 {dCount}개</span></div>
+                                        </div>
+                                        <ChevronRight size={16} className="opacity-30 self-center"/>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      /* 레벨 0: 학생 목록 */
+                      <div>
+                        <div className="flex items-center justify-between mb-8">
+                          <h2 className="text-3xl font-black flex items-center gap-3"><GraduationCap size={32} className="text-emerald-600"/> 학급 현황<span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{classroomData.length}명</span></h2>
+                          <button onClick={loadClassroomData} disabled={isClassroomLoading} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border ${currentTheme.border} hover:border-emerald-400 hover:text-emerald-600 transition-all opacity-60 hover:opacity-100 disabled:opacity-30`}>{isClassroomLoading ? '불러오는 중...' : '🔄 새로고침'}</button>
+                        </div>
+                        {isClassroomLoading ? (
+                          <div className="flex items-center justify-center h-32 text-sm opacity-40 animate-pulse">학생 데이터 불러오는 중...</div>
+                        ) : classroomData.length === 0 ? (
+                          <div className="text-center py-20 opacity-40">
+                            <GraduationCap size={48} className="mx-auto mb-4 opacity-30"/>
+                            <p className="font-bold">아직 학생이 없습니다.</p>
+                            <p className="text-sm mt-1">학급 코드: <span className="font-bold text-emerald-600">{databases?.__meta?.classCode || '없음'}</span> 을 학생들에게 알려주세요.</p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {classroomData.map(student => (
+                              <div key={student.id} onClick={() => { setClassroomViewStudentId(student.id); setClassroomViewBookId(null); setClassroomViewChapterId(null); }} className={`p-5 rounded-2xl border ${currentTheme.border} hover:border-emerald-400 cursor-pointer hover:shadow-lg transition-all group`}>
+                                <div className="flex items-center gap-3 mb-4">
+                                  <div className="w-12 h-12 rounded-xl bg-emerald-600 flex items-center justify-center text-white text-xl font-black shrink-0">{student.displayName[0]}</div>
+                                  <div className="flex-1 min-w-0"><div className="font-black text-base truncate">{student.displayName}</div><div className="text-xs opacity-40">책 {student.books.length}권</div></div>
+                                  <ChevronRight size={16} className="opacity-30 group-hover:opacity-70 transition-opacity"/>
+                                </div>
+                                <div className="flex gap-3 text-xs opacity-50 border-t pt-3" style={{borderColor:'rgba(0,0,0,0.08)'}}>
+                                  <span>챕터 {student.chapters.length}개</span>
+                                  <span>노트 {student.details.length}개</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* ── 일반 학생/개인 서재 뷰 ── */
+                  <div>
                 <h2 className="text-3xl font-black mb-8 flex items-center gap-2">{currentLibrary} 님의 도서 <span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{books.length}권</span></h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {books.map(book => (
@@ -1055,6 +1242,8 @@ export default function App() {
                   ))}
                   <button onClick={handleAddBook} className={`h-64 rounded-3xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center opacity-50 hover:opacity-100 hover:border-blue-500 hover:text-blue-500 transition-all gap-2`}><Plus size={32}/><span className="font-bold">새로운 책 추가</span></button>
                 </div>
+                  </div>
+                )}
               </motion.div>
             )}
             {viewMode === 'chapters' && selectedBook && (
