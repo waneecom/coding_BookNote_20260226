@@ -5,7 +5,7 @@ import {
   Plus, Moon, Sun, BookOpen, Lock, Globe,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2,
-  UserPlus, UserCheck
+  UserPlus, UserCheck, GraduationCap
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase';
 
@@ -65,6 +65,8 @@ export default function App() {
   const [authConfirmPw, setAuthConfirmPw] = useState('');
   const [authError, setAuthError] = useState('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [authType, setAuthType] = useState('personal'); // 'personal' | 'education'
+  const [authClassCode, setAuthClassCode] = useState('');
 
   // --- 독자 현황 / 친구 ---
   const [showSocialPanel, setShowSocialPanel] = useState(false);
@@ -206,6 +208,15 @@ export default function App() {
       localStorage.setItem('booknote_session', JSON.stringify(user));
       setIsAppLoading(true);
       await loadUserData(name, name);
+      // 교육 모드: 클래스 코드 저장
+      if (authType === 'education') {
+        const code = authClassCode.trim();
+        const baseDb = { [name]: { books: [], chapters: [], details: [], customGenres: [] } };
+        const updatedDb = { ...baseDb, __meta: { friends: [], mode: 'education', classCode: code } };
+        setDatabases(updatedDb);
+        localStorage.setItem('booknote_web_final', JSON.stringify(updatedDb));
+        await supabase.from('booknote_saves').upsert({ id: name, data: updatedDb });
+      }
     } catch (err) {
       if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
         setAuthError('서버에 연결할 수 없습니다. Supabase 프로젝트가 일시 정지됐거나 Vercel 환경 변수가 없습니다. supabase.com에서 프로젝트 상태를 확인해주세요.');
@@ -687,17 +698,26 @@ export default function App() {
   // --- 로그인 / 회원가입 화면 ---
   if (!currentUser) {
     const isSignup = authMode === 'signup';
+    const isEdu = authType === 'education';
     return (
       <div className={`flex items-center justify-center h-screen w-full ${currentTheme.bg} ${currentTheme.text} font-sans`}>
         <motion.div
-          key={authMode}
+          key={authMode + authType}
           initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-          className={`p-10 rounded-3xl shadow-2xl ${currentTheme.panel} border ${currentTheme.border} w-full max-w-sm mx-4`}
+          className={`p-10 rounded-3xl shadow-2xl ${currentTheme.panel} border ${isEdu ? 'border-emerald-400' : currentTheme.border} w-full max-w-sm mx-4`}
         >
-          <div className="text-center mb-8">
-            <BookOpen size={48} className={`mx-auto mb-3 ${currentTheme.primary}`} />
+          <div className="text-center mb-6">
+            {isEdu
+              ? <GraduationCap size={48} className="mx-auto mb-3 text-emerald-500" />
+              : <BookOpen size={48} className={`mx-auto mb-3 ${currentTheme.primary}`} />
+            }
             <h1 className="text-2xl font-black">BookNote</h1>
-            <p className="text-xs opacity-40 mt-1">☁️ 나만의 클라우드 서재</p>
+            <p className="text-xs opacity-40 mt-1">{isEdu ? '🎓 교육 버전' : '☁️ 나만의 클라우드 서재'}</p>
+          </div>
+          {/* 버전 선택 */}
+          <div className={`flex rounded-xl overflow-hidden border-2 mb-5 ${currentTheme.border}`}>
+            <button onClick={() => { setAuthType('personal'); setAuthError(''); }} className={`flex-1 py-2.5 text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${!isEdu ? `${currentTheme.primaryBg} text-white` : `${currentTheme.text} opacity-60 hover:opacity-100`}`}><BookOpen size={14}/> 일반</button>
+            <button onClick={() => { setAuthType('education'); setAuthError(''); }} className={`flex-1 py-2.5 text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${isEdu ? 'bg-emerald-600 text-white' : `${currentTheme.text} opacity-60 hover:opacity-100`}`}><GraduationCap size={14}/> 교육</button>
           </div>
 
           {!isSupabaseConfigured && (
@@ -751,6 +771,18 @@ export default function App() {
                 />
               </div>
             )}
+            {isSignup && isEdu && (
+              <div>
+                <label className="text-xs font-bold mb-1 block text-emerald-600 flex items-center gap-1"><GraduationCap size={11}/> 클래스 코드 <span className="opacity-50 font-normal">(선택)</span></label>
+                <input
+                  value={authClassCode}
+                  onChange={e => { setAuthClassCode(e.target.value); setAuthError(''); }}
+                  onKeyDown={e => e.key === 'Enter' && handleSignup()}
+                  placeholder="선생님께 받은 코드를 입력하세요"
+                  className={`w-full p-3 rounded-xl border-2 border-emerald-300 bg-transparent outline-none focus:border-emerald-500 text-sm`}
+                />
+              </div>
+            )}
           </div>
 
           {authError && (
@@ -760,9 +792,9 @@ export default function App() {
           <button
             onClick={isSignup ? handleSignup : handleLogin}
             disabled={isAuthLoading}
-            className={`w-full mt-5 py-3 rounded-xl ${currentTheme.primaryBg} text-white font-bold shadow hover:opacity-90 transition-opacity disabled:opacity-50`}
+            className={`w-full mt-5 py-3 rounded-xl ${isEdu ? 'bg-emerald-600 hover:bg-emerald-700' : currentTheme.primaryBg} text-white font-bold shadow transition-colors disabled:opacity-50`}
           >
-            {isAuthLoading ? '처리 중...' : isSignup ? '회원가입' : '로그인'}
+            {isAuthLoading ? '처리 중...' : isSignup ? (isEdu ? '🎓 교육 계정 만들기' : '회원가입') : (isEdu ? '🎓 교육 버전 로그인' : '로그인')}
           </button>
         </motion.div>
       </div>
@@ -1010,7 +1042,7 @@ export default function App() {
                         <div>
                           {editingBookId === book.id
                             ? <input autoFocus defaultValue={book.title} onClick={e=>e.stopPropagation()} onBlur={e=>handleRename(book.id, e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleRename(book.id, e.target.value)} className="text-sm font-black w-full bg-transparent border-b-2 border-blue-500 outline-none"/>
-                            : <h3 className="text-sm font-black line-clamp-2 leading-snug">{book.title}</h3>
+                            : <h3 className="text-base font-black line-clamp-2 leading-snug">{book.title}</h3>
                           }
                           <p className="mt-0.5 text-xs opacity-50 truncate">{book.author || '저자 미상'} · {book.totalPages}p</p>
                         </div>
@@ -1242,7 +1274,7 @@ export default function App() {
 
         return (
           <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={closeAll}>
-            <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
+            <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
 
               {/* 헤더 */}
               <div className={`px-6 py-4 border-b ${currentTheme.border} flex items-center gap-2 shrink-0`}>
