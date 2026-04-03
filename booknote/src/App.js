@@ -83,6 +83,15 @@ export default function App() {
   const [classroomViewChapterId, setClassroomViewChapterId] = useState(null);
   const [feedbackDraft, setFeedbackDraft] = useState({}); // { detailId: { text, score } }
   const [feedbackSaving, setFeedbackSaving] = useState({}); // { detailId: bool }
+  const [classroomTab, setClassroomTab] = useState('students'); // 'students'|'announcements'|'materials'
+  const [announcementDraft, setAnnouncementDraft] = useState('');
+  const [materialDraft, setMaterialDraft] = useState({ title: '', content: '', url: '' });
+  const [messageDraft, setMessageDraft] = useState('');
+  const [showTeacherPanel, setShowTeacherPanel] = useState(false); // 학생용 선생님 패널
+  const [teacherInfo, setTeacherInfo] = useState(null); // 학생이 로드한 선생님 데이터
+  const [teacherPanelTab, setTeacherPanelTab] = useState('announcements');
+  const [isTeacherInfoLoading, setIsTeacherInfoLoading] = useState(false);
+  const [classroomMsgStudentId, setClassroomMsgStudentId] = useState(null); // 교사: 메시지 열린 학생
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -706,7 +715,10 @@ export default function App() {
             allChapters.push(...(lib.chapters || []));
             allDetails.push(...(lib.details || []));
           });
-          return { id: s.id, displayName: user?.display_name || s.id, books: allBooks, chapters: allChapters, details: allDetails };
+          const myMsgs = databasesRef.current?.__meta?.messages?.[s.id] || [];
+          const tMsgs = s.data?.__meta?.messages?.[currentUser?.id] || [];
+          const allMsgs = [...new Map([...myMsgs, ...tMsgs].map(m => [`${m.ts}-${m.from}`, m])).values()].sort((a, b) => a.ts - b.ts);
+          return { id: s.id, displayName: user?.display_name || s.id, books: allBooks, chapters: allChapters, details: allDetails, messages: allMsgs };
         });
       setClassroomData(result);
     } catch (err) {
@@ -741,6 +753,81 @@ export default function App() {
       console.error('피드백 저장 실패:', err);
     } finally {
       setFeedbackSaving(prev => ({ ...prev, [detailId]: false }));
+    }
+  };
+
+  // 학생: 선생님 정보 로드 (공지, 자료, 메시지)
+  const loadTeacherInfo = async () => {
+    setIsTeacherInfoLoading(true);
+    try {
+      const myClassCode = databasesRef.current?.__meta?.classCode;
+      if (!myClassCode) return;
+      const { data: saves } = await supabase.from('booknote_saves').select('id, data');
+      const teacherSave = (saves || []).find(s => s.data?.__meta?.classCode === myClassCode && s.data?.__meta?.role === 'teacher');
+      if (teacherSave) {
+        const myMsgs = databasesRef.current?.__meta?.messages?.[teacherSave.id] || [];
+        const tMsgs = teacherSave.data.__meta?.messages?.[currentUser?.id] || [];
+        const allMsgs = [...new Map([...myMsgs, ...tMsgs].map(m => [`${m.ts}-${m.from}`, m])).values()].sort((a, b) => a.ts - b.ts);
+        setTeacherInfo({
+          id: teacherSave.id,
+          announcements: teacherSave.data.__meta?.announcements || [],
+          materials: teacherSave.data.__meta?.materials || [],
+          messages: allMsgs
+        });
+      }
+    } catch (err) {
+      console.error('선생님 정보 로딩 실패:', err);
+    } finally {
+      setIsTeacherInfoLoading(false);
+    }
+  };
+
+  // 교사: 공지사항 저장
+  const saveAnnouncement = async () => {
+    if (!announcementDraft.trim()) return;
+    const newAnn = { id: Date.now().toString(), text: announcementDraft.trim(), ts: Date.now() };
+    const meta = databasesRef.current?.__meta || {};
+    await saveMeta({ ...meta, announcements: [newAnn, ...(meta.announcements || [])] });
+    setAnnouncementDraft('');
+    loadClassroomData();
+  };
+
+  // 교사: 예시 자료 저장
+  const saveMaterialItem = async () => {
+    if (!materialDraft.title.trim() && !materialDraft.content.trim()) return;
+    const newMat = { id: Date.now().toString(), ...materialDraft, ts: Date.now() };
+    const meta = databasesRef.current?.__meta || {};
+    await saveMeta({ ...meta, materials: [newMat, ...(meta.materials || [])] });
+    setMaterialDraft({ title: '', content: '', url: '' });
+  };
+
+  // 메시지 전송 (교사↔학생 전용)
+  const sendMessage = async (toId) => {
+    if (!messageDraft.trim()) return;
+    const msg = { from: currentUser.id, text: messageDraft.trim(), ts: Date.now() };
+    const meta = databasesRef.current?.__meta || {};
+    const myMsgs = { ...(meta.messages || {}), [toId]: [...(meta.messages?.[toId] || []), msg] };
+    await saveMeta({ ...meta, messages: myMsgs });
+    setMessageDraft('');
+    // 상대방 데이터에도 저장
+    try {
+      const { data: target } = await supabase.from('booknote_saves').select('data').eq('id', toId).single();
+      if (target?.data) {
+        const tMeta = target.data.__meta || {};
+        const tMsgs = { ...(tMeta.messages || {}), [currentUser.id]: [...(tMeta.messages?.[currentUser.id] || []), msg] };
+        await supabase.from('booknote_saves').upsert({ id: toId, data: { ...target.data, __meta: { ...tMeta, messages: tMsgs } } });
+      }
+    } catch {}
+    // 학생이면 teacherInfo 메시지 업데이트
+    if (!isTeacher && teacherInfo) {
+      setTeacherInfo(prev => prev ? { ...prev, messages: [...(prev.messages || []), msg] } : prev);
+    }
+    // 교사이면 classroomData 메시지 업데이트
+    if (isTeacher) {
+      setClassroomData(prev => prev.map(s => s.id !== toId ? s : {
+        ...s,
+        messages: [...(s.messages || []), msg]
+      }));
     }
   };
 
@@ -1082,7 +1169,15 @@ export default function App() {
             {selectedChapter && viewMode !== 'shelf' && <><ChevronRight size={14}/><button onClick={() => {setViewMode('details'); setSelectedDetail(null);}} className={`hover:opacity-100 hover:text-blue-500 transition-colors truncate max-w-[150px] ${viewMode==='details'?'text-blue-500 font-bold opacity-100':''}`}>{selectedChapter.title}</button></>}
             {selectedDetail && viewMode === 'editor' && <><ChevronRight size={14}/><span className="text-blue-500 font-bold opacity-100 truncate max-w-[150px]">{selectedDetail.title}</span></>}
           </div>
-          {!isTeacher && (
+          {!isTeacher && isEduMode && (
+            <button
+              onClick={() => { setShowTeacherPanel(true); loadTeacherInfo(); }}
+              className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-emerald-300 hover:border-emerald-500 hover:text-emerald-700 transition-all opacity-70 hover:opacity-100`}
+            >
+              <GraduationCap size={14}/> 선생님
+            </button>
+          )}
+          {!isTeacher && !isEduMode && (
             <button
               onClick={() => { setShowSocialPanel(true); loadSocialData(); }}
               className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border ${currentTheme.border} hover:border-blue-400 hover:text-blue-500 transition-all opacity-60 hover:opacity-100`}
@@ -1196,53 +1291,93 @@ export default function App() {
                         })()}
                       </div>
                     ) : classroomViewStudentId ? (
-                      /* 레벨 1: 학생의 책 목록 */
-                      <div className="max-w-4xl">
-                        <button onClick={() => { setClassroomViewStudentId(null); setClassroomViewBookId(null); }} className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100 transition-all mb-6`}><ChevronLeft size={13}/> 학생 목록으로</button>
+                      /* 레벨 1: 학생의 책 목록 + 메시지 */
+                      <div className="w-full">
+                        <button onClick={() => { setClassroomViewStudentId(null); setClassroomViewBookId(null); setClassroomMsgStudentId(null); }} className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100 transition-all mb-6`}><ChevronLeft size={13}/> 학생 목록으로</button>
                         {(() => {
                           const student = classroomData.find(s => s.id === classroomViewStudentId);
                           if (!student) return null;
                           return (
-                            <div>
-                              <div className="flex items-center gap-4 mb-8">
-                                <div className={`w-14 h-14 rounded-2xl bg-emerald-600 flex items-center justify-center text-white text-2xl font-black`}>{student.displayName[0]}</div>
-                                <div><div className="font-black text-2xl">{student.displayName}</div><div className="text-sm opacity-40 mt-0.5">책 {student.books.length}권 등록</div></div>
-                              </div>
-                              <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-3">읽은 책</div>
-                              {student.books.length === 0 ? <div className="text-sm opacity-40 text-center py-10">등록된 책이 없습니다.</div> : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                  {student.books.map((b, i) => {
-                                    const chCount = student.chapters?.filter(c => c.bookId === b.id).length || 0;
-                                    const dCount = student.details?.filter(d => student.chapters?.filter(c => c.bookId === b.id).map(c => c.id).includes(d.chapterId)).length || 0;
-                                    return (
-                                      <div key={i} onClick={() => setClassroomViewBookId(b.id)} className={`flex gap-3 p-4 rounded-2xl border ${currentTheme.border} hover:border-emerald-400 cursor-pointer hover:shadow-md transition-all`}>
-                                        {b.coverUrl ? <img src={b.coverUrl} className="w-12 h-16 object-contain rounded shrink-0" alt=""/> : <div className={`w-12 h-16 rounded ${currentTheme.primaryLight} flex items-center justify-center shrink-0`}><Book size={16} className="opacity-30"/></div>}
-                                        <div className="flex-1 min-w-0">
-                                          <div className="font-bold leading-snug line-clamp-2">{b.title}</div>
-                                          {b.author && <div className="text-xs opacity-40 truncate mt-0.5">{b.author}</div>}
-                                          <div className="flex gap-3 mt-2 text-xs opacity-50"><span>챕터 {chCount}개</span><span>노트 {dCount}개</span></div>
-                                        </div>
-                                        <ChevronRight size={16} className="opacity-30 self-center"/>
-                                      </div>
-                                    );
-                                  })}
+                            <div className="flex gap-6">
+                              {/* 왼쪽: 읽은 책 목록 */}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-4 mb-6">
+                                  <div className={`w-14 h-14 rounded-2xl bg-emerald-600 flex items-center justify-center text-white text-2xl font-black`}>{student.displayName[0]}</div>
+                                  <div><div className="font-black text-2xl">{student.displayName}</div><div className="text-sm opacity-40 mt-0.5">책 {student.books.length}권 등록</div></div>
                                 </div>
-                              )}
+                                <div className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-3">읽은 책</div>
+                                {student.books.length === 0 ? <div className="text-sm opacity-40 text-center py-10">등록된 책이 없습니다.</div> : (
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {student.books.map((b, i) => {
+                                      const chCount = student.chapters?.filter(c => c.bookId === b.id).length || 0;
+                                      const dCount = student.details?.filter(d => student.chapters?.filter(c => c.bookId === b.id).map(c => c.id).includes(d.chapterId)).length || 0;
+                                      return (
+                                        <div key={i} onClick={() => setClassroomViewBookId(b.id)} className={`flex gap-3 p-4 rounded-2xl border ${currentTheme.border} hover:border-emerald-400 cursor-pointer hover:shadow-md transition-all`}>
+                                          {b.coverUrl ? <img src={b.coverUrl} className="w-12 h-16 object-contain rounded shrink-0" alt=""/> : <div className={`w-12 h-16 rounded ${currentTheme.primaryLight} flex items-center justify-center shrink-0`}><Book size={16} className="opacity-30"/></div>}
+                                          <div className="flex-1 min-w-0">
+                                            <div className="font-bold leading-snug line-clamp-2">{b.title}</div>
+                                            {b.author && <div className="text-xs opacity-40 truncate mt-0.5">{b.author}</div>}
+                                            <div className="flex gap-3 mt-2 text-xs opacity-50"><span>챕터 {chCount}개</span><span>노트 {dCount}개</span></div>
+                                          </div>
+                                          <ChevronRight size={16} className="opacity-30 self-center"/>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                              {/* 오른쪽: 1:1 메시지 */}
+                              <div className={`w-80 shrink-0 rounded-2xl border-2 border-emerald-200 flex flex-col overflow-hidden`} style={{maxHeight:'60vh'}}>
+                                <div className="px-4 py-3 bg-emerald-600 text-white flex items-center gap-2 shrink-0">
+                                  <Users size={15}/>
+                                  <span className="font-black text-sm">{student.displayName} 님과 메시지</span>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                                  {(student.messages || []).length === 0 ? (
+                                    <div className="text-xs opacity-30 text-center py-6">메시지가 없습니다</div>
+                                  ) : (student.messages || []).map((m, i) => (
+                                    <div key={i} className={`flex ${m.from === currentUser.id ? 'justify-end' : 'justify-start'}`}>
+                                      <div className={`max-w-[80%] px-3 py-2 rounded-2xl text-sm ${m.from === currentUser.id ? 'bg-emerald-600 text-white rounded-tr-sm' : `${currentTheme.panel} border ${currentTheme.border} rounded-tl-sm`}`}>
+                                        {m.text}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className={`p-3 border-t border-emerald-200 flex gap-2 shrink-0`}>
+                                  <input
+                                    value={classroomMsgStudentId === student.id ? messageDraft : ''}
+                                    onFocus={() => setClassroomMsgStudentId(student.id)}
+                                    onChange={e => { setClassroomMsgStudentId(student.id); setMessageDraft(e.target.value); }}
+                                    onKeyDown={e => e.key === 'Enter' && sendMessage(student.id).then(() => setMessageDraft(''))}
+                                    placeholder="메시지 입력..."
+                                    className="flex-1 text-xs p-2 rounded-xl border border-emerald-200 bg-transparent outline-none focus:border-emerald-500"
+                                  />
+                                  <button onClick={() => sendMessage(student.id).then(() => setMessageDraft(''))} className="px-3 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 shrink-0">전송</button>
+                                </div>
+                              </div>
                             </div>
                           );
                         })()}
                       </div>
                     ) : (
-                      /* 레벨 0: 학생 목록 */
+                      /* 레벨 0: 탭 (학생 목록 / 공지사항 / 예시 자료) */
                       <div>
-                        <div className="flex items-center justify-between mb-8">
+                        <div className="flex items-center justify-between mb-6">
                           <h2 className="text-3xl font-black flex items-center gap-3"><GraduationCap size={32} className="text-emerald-600"/> 학급 현황<span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{classroomData.length}명</span></h2>
                           <button onClick={loadClassroomData} disabled={isClassroomLoading} className={`group flex items-center gap-2 text-sm font-bold px-4 py-2.5 rounded-2xl bg-emerald-500 text-white hover:bg-emerald-600 shadow-md hover:shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed`}>
                             <svg className={`w-4 h-4 ${isClassroomLoading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                             {isClassroomLoading ? '불러오는 중...' : '새로고침'}
                           </button>
                         </div>
-                        {isClassroomLoading ? (
+                        {/* 탭 바 */}
+                        <div className={`flex gap-1 p-1 rounded-2xl mb-6 w-fit`} style={{background:'rgba(0,0,0,0.06)'}}>
+                          {[['students','👥 학생 목록'],['announcements','📢 공지사항'],['materials','📚 예시 자료']].map(([key, label]) => (
+                            <button key={key} onClick={() => setClassroomTab(key)} className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${classroomTab===key ? 'bg-emerald-600 text-white shadow-md' : 'opacity-50 hover:opacity-80'}`}>{label}</button>
+                          ))}
+                        </div>
+
+                        {/* 학생 목록 탭 */}
+                        {classroomTab === 'students' && (isClassroomLoading ? (
                           <div className="flex items-center justify-center h-32 text-sm opacity-40 animate-pulse">학생 데이터 불러오는 중...</div>
                         ) : classroomData.length === 0 ? (
                           <div className="text-center py-20 opacity-40">
@@ -1253,7 +1388,7 @@ export default function App() {
                         ) : (
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                             {classroomData.map(student => (
-                              <div key={student.id} onClick={() => { setClassroomViewStudentId(student.id); setClassroomViewBookId(null); setClassroomViewChapterId(null); }} className={`p-5 rounded-2xl border ${currentTheme.border} hover:border-emerald-400 cursor-pointer hover:shadow-lg transition-all group`}>
+                              <div key={student.id} onClick={() => { setClassroomViewStudentId(student.id); setClassroomViewBookId(null); setClassroomViewChapterId(null); setClassroomMsgStudentId(null); }} className={`p-5 rounded-2xl border ${currentTheme.border} hover:border-emerald-400 cursor-pointer hover:shadow-lg transition-all group`}>
                                 <div className="flex items-center gap-3 mb-4">
                                   <div className="w-12 h-12 rounded-xl bg-emerald-600 flex items-center justify-center text-white text-xl font-black shrink-0">{student.displayName[0]}</div>
                                   <div className="flex-1 min-w-0"><div className="font-black text-base truncate">{student.displayName}</div><div className="text-xs opacity-40">책 {student.books.length}권</div></div>
@@ -1262,7 +1397,53 @@ export default function App() {
                                 <div className="flex gap-3 text-xs opacity-50 border-t pt-3" style={{borderColor:'rgba(0,0,0,0.08)'}}>
                                   <span>챕터 {student.chapters.length}개</span>
                                   <span>노트 {student.details.length}개</span>
+                                  {(student.messages||[]).length > 0 && <span className="text-emerald-600 font-bold">메시지 {student.messages.length}개</span>}
                                 </div>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+
+                        {/* 공지사항 탭 */}
+                        {classroomTab === 'announcements' && (
+                          <div className="space-y-4">
+                            <div className={`p-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50/40`}>
+                              <div className="text-xs font-black text-emerald-700 mb-2 flex items-center gap-1.5">📢 새 공지 작성</div>
+                              <textarea value={announcementDraft} onChange={e => setAnnouncementDraft(e.target.value)} placeholder="전체 학생에게 전달할 내용을 입력하세요..." rows={3} className="w-full p-3 rounded-xl border border-emerald-200 bg-white text-sm focus:border-emerald-500 outline-none resize-none mb-2"/>
+                              <button onClick={saveAnnouncement} disabled={!announcementDraft.trim()} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow transition-all disabled:opacity-40"><Save size={14}/> 공지 등록</button>
+                            </div>
+                            {(databases?.__meta?.announcements || []).length === 0 ? (
+                              <div className="text-sm opacity-40 text-center py-8">등록된 공지사항이 없습니다.</div>
+                            ) : (databases?.__meta?.announcements || []).map(ann => (
+                              <div key={ann.id} className={`p-4 rounded-2xl border ${currentTheme.border}`}>
+                                <div className="text-sm leading-relaxed whitespace-pre-wrap">{ann.text}</div>
+                                <div className="text-[10px] opacity-30 mt-2">{new Date(ann.ts).toLocaleString('ko-KR')}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* 예시 자료 탭 */}
+                        {classroomTab === 'materials' && (
+                          <div className="space-y-4">
+                            <div className={`p-4 rounded-2xl border-2 border-blue-200 bg-blue-50/40`}>
+                              <div className="text-xs font-black text-blue-700 mb-2">📚 예시 자료 등록</div>
+                              <input value={materialDraft.title} onChange={e => setMaterialDraft(p => ({...p, title: e.target.value}))} placeholder="제목" className="w-full p-2.5 rounded-xl border border-blue-200 bg-white text-sm focus:border-blue-500 outline-none mb-2"/>
+                              <textarea value={materialDraft.content} onChange={e => setMaterialDraft(p => ({...p, content: e.target.value}))} placeholder="내용을 입력하세요..." rows={3} className="w-full p-2.5 rounded-xl border border-blue-200 bg-white text-sm focus:border-blue-500 outline-none resize-none mb-2"/>
+                              <input value={materialDraft.url} onChange={e => setMaterialDraft(p => ({...p, url: e.target.value}))} placeholder="링크 (선택 · YouTube 또는 URL)" className="w-full p-2.5 rounded-xl border border-blue-200 bg-white text-sm focus:border-blue-500 outline-none mb-2"/>
+                              <button onClick={saveMaterialItem} disabled={!materialDraft.title.trim() && !materialDraft.content.trim()} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 shadow transition-all disabled:opacity-40"><Save size={14}/> 자료 등록</button>
+                            </div>
+                            {(databases?.__meta?.materials || []).length === 0 ? (
+                              <div className="text-sm opacity-40 text-center py-8">등록된 예시 자료가 없습니다.</div>
+                            ) : (databases?.__meta?.materials || []).map(mat => (
+                              <div key={mat.id} className={`p-4 rounded-2xl border ${currentTheme.border}`}>
+                                {mat.title && <div className="font-black mb-1">{mat.title}</div>}
+                                {mat.content && <div className="text-sm leading-relaxed whitespace-pre-wrap opacity-80 mb-2">{mat.content}</div>}
+                                {mat.url && (getYoutubeId(mat.url)
+                                  ? <div className="relative aspect-video rounded-xl overflow-hidden bg-black mt-2"><iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(mat.url)}`} title="material" allowFullScreen></iframe></div>
+                                  : <a href={mat.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 text-xs flex items-center gap-1 hover:underline"><ExternalLink size={12}/> {mat.url}</a>
+                                )}
+                                <div className="text-[10px] opacity-30 mt-2">{new Date(mat.ts).toLocaleString('ko-KR')}</div>
                               </div>
                             ))}
                           </div>
@@ -1710,6 +1891,94 @@ export default function App() {
         <div className="fixed bg-white border rounded-xl shadow-2xl py-2 w-40 z-50 text-sm" style={{top:contextMenu.y, left:contextMenu.x}} onClick={e=>e.stopPropagation()}>
           <button className="w-full text-left px-4 py-2 hover:bg-gray-100 text-black" onClick={()=>{setEditingBookId(contextMenu.book.id);setContextMenu(null)}}>이름 변경</button>
           <button className="w-full text-left px-4 py-2 hover:bg-gray-100 text-red-500" onClick={()=>{handleDeleteBook(contextMenu.book.id);setContextMenu(null)}}>삭제</button>
+        </div>
+      )}
+
+      {/* ── 학생: 선생님 패널 모달 ── */}
+      {showTeacherPanel && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowTeacherPanel(false)}>
+          <div className={`${currentTheme.panel} ${currentTheme.text} rounded-3xl shadow-2xl w-full max-w-2xl max-h-[88vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
+            {/* 헤더 */}
+            <div className={`px-6 py-4 border-b ${currentTheme.border} flex items-center gap-3 shrink-0 bg-emerald-600 text-white`}>
+              <GraduationCap size={20}/>
+              <span className="font-black text-base flex-1">선생님 공간</span>
+              <button onClick={() => setShowTeacherPanel(false)} className="text-white/60 hover:text-white text-xs font-bold px-2 py-1 rounded-lg">닫기</button>
+            </div>
+            {/* 탭 */}
+            <div className={`flex gap-1 p-2 shrink-0`} style={{background:'rgba(0,0,0,0.04)'}}>
+              {[['announcements','📢 공지사항'],['materials','📚 예시 자료'],['message','💬 선생님과 대화']].map(([key, label]) => (
+                <button key={key} onClick={() => setTeacherPanelTab(key)} className={`flex-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${teacherPanelTab===key ? 'bg-emerald-600 text-white shadow' : 'opacity-50 hover:opacity-80'}`}>{label}</button>
+              ))}
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              {isTeacherInfoLoading ? (
+                <div className="flex items-center justify-center h-24 text-sm opacity-40 animate-pulse">불러오는 중...</div>
+              ) : !teacherInfo ? (
+                <div className="text-center py-10 opacity-40"><p className="font-bold">선생님 정보를 찾을 수 없습니다.</p><p className="text-sm mt-1">학급 코드가 올바른지 확인하세요.</p></div>
+              ) : (
+                <>
+                  {/* 공지사항 탭 */}
+                  {teacherPanelTab === 'announcements' && (
+                    <div className="space-y-3">
+                      {teacherInfo.announcements.length === 0 ? (
+                        <div className="text-sm opacity-40 text-center py-10">등록된 공지사항이 없습니다.</div>
+                      ) : teacherInfo.announcements.map(ann => (
+                        <div key={ann.id} className={`p-4 rounded-2xl border ${currentTheme.border}`}>
+                          <div className="text-sm leading-relaxed whitespace-pre-wrap">{ann.text}</div>
+                          <div className="text-[10px] opacity-30 mt-2">{new Date(ann.ts).toLocaleString('ko-KR')}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* 예시 자료 탭 */}
+                  {teacherPanelTab === 'materials' && (
+                    <div className="space-y-3">
+                      {teacherInfo.materials.length === 0 ? (
+                        <div className="text-sm opacity-40 text-center py-10">등록된 예시 자료가 없습니다.</div>
+                      ) : teacherInfo.materials.map(mat => (
+                        <div key={mat.id} className={`p-4 rounded-2xl border ${currentTheme.border}`}>
+                          {mat.title && <div className="font-black mb-1">{mat.title}</div>}
+                          {mat.content && <div className="text-sm leading-relaxed whitespace-pre-wrap opacity-80 mb-2">{mat.content}</div>}
+                          {mat.url && (getYoutubeId(mat.url)
+                            ? <div className="relative aspect-video rounded-xl overflow-hidden bg-black mt-2"><iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(mat.url)}`} title="material" allowFullScreen></iframe></div>
+                            : <a href={mat.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 text-xs flex items-center gap-1 hover:underline"><ExternalLink size={12}/> {mat.url}</a>
+                          )}
+                          <div className="text-[10px] opacity-30 mt-2">{new Date(mat.ts).toLocaleString('ko-KR')}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* 메시지 탭 */}
+                  {teacherPanelTab === 'message' && (
+                    <div className="flex flex-col h-full" style={{minHeight:'300px'}}>
+                      <div className="flex-1 space-y-2 mb-3 overflow-y-auto" style={{maxHeight:'340px'}}>
+                        {teacherInfo.messages.length === 0 ? (
+                          <div className="text-xs opacity-30 text-center py-8">선생님과의 대화가 없습니다.</div>
+                        ) : teacherInfo.messages.map((m, i) => (
+                          <div key={i} className={`flex ${m.from === currentUser.id ? 'justify-end' : 'justify-start'}`}>
+                            {m.from !== currentUser.id && <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-black mr-2 shrink-0 self-end">T</div>}
+                            <div className={`max-w-[75%] px-3 py-2 rounded-2xl text-sm ${m.from === currentUser.id ? 'bg-emerald-600 text-white rounded-tr-sm' : `${currentTheme.panel} border ${currentTheme.border} rounded-tl-sm`}`}>
+                              {m.text}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-2 pt-3 border-t" style={{borderColor:'rgba(0,0,0,0.1)'}}>
+                        <input
+                          value={messageDraft}
+                          onChange={e => setMessageDraft(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter' && teacherInfo) sendMessage(teacherInfo.id); }}
+                          placeholder="선생님께 메시지 보내기..."
+                          className={`flex-1 text-sm p-3 rounded-xl border ${currentTheme.border} bg-transparent outline-none focus:border-emerald-500`}
+                        />
+                        <button onClick={() => teacherInfo && sendMessage(teacherInfo.id)} className="px-4 py-2 bg-emerald-600 text-white text-sm font-bold rounded-xl hover:bg-emerald-700 shrink-0">전송</button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
