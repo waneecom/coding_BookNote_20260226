@@ -81,6 +81,8 @@ export default function App() {
   const [classroomViewStudentId, setClassroomViewStudentId] = useState(null);
   const [classroomViewBookId, setClassroomViewBookId] = useState(null);
   const [classroomViewChapterId, setClassroomViewChapterId] = useState(null);
+  const [feedbackDraft, setFeedbackDraft] = useState({}); // { detailId: { text, score } }
+  const [feedbackSaving, setFeedbackSaving] = useState({}); // { detailId: bool }
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -716,6 +718,31 @@ export default function App() {
 
   // 교사 계정 여부
   const isTeacher = databases?.__meta?.role === 'teacher';
+  const isEduMode = databases?.__meta?.mode === 'education';
+
+  const saveFeedbackToStudent = async (studentId, detailId, text, score) => {
+    setFeedbackSaving(prev => ({ ...prev, [detailId]: true }));
+    try {
+      const { data: studentSave } = await supabase.from('booknote_saves').select('data').eq('id', studentId).single();
+      if (!studentSave?.data) return;
+      const updatedData = JSON.parse(JSON.stringify(studentSave.data));
+      Object.values(updatedData).forEach(lib => {
+        if (!lib?.details) return;
+        const detail = lib.details.find(d => d.id === detailId);
+        if (detail) detail.teacherFeedback = { text, score: Number(score) || 0, teacherName: currentUser.displayName };
+      });
+      await supabase.from('booknote_saves').upsert({ id: studentId, data: updatedData });
+      // 로컬 classroomData도 업데이트
+      setClassroomData(prev => prev.map(s => s.id !== studentId ? s : {
+        ...s,
+        details: s.details.map(d => d.id !== detailId ? d : { ...d, teacherFeedback: { text, score: Number(score) || 0, teacherName: currentUser.displayName } })
+      }));
+    } catch (err) {
+      console.error('피드백 저장 실패:', err);
+    } finally {
+      setFeedbackSaving(prev => ({ ...prev, [detailId]: false }));
+    }
+  };
 
   // 교사 로그인 시 학급 현황 자동 로드
   useEffect(() => {
@@ -920,7 +947,7 @@ export default function App() {
             </div>
           </div>
         )}
-        {usedGenres.map(genre => (
+        {!isEduMode && usedGenres.map(genre => (
           <div key={genre} onDragOver={(e) => handleDragOver(e, genre)} onDrop={(e) => handleDrop(e, genre)} onDragLeave={() => setDragOverGenre(null)} className={`mb-4 rounded-xl transition-colors ${dragOverGenre === genre ? 'bg-blue-100 ring-2 ring-blue-400' : ''}`}>
             <div className="flex items-center gap-2 px-2 py-2 rounded-lg font-medium opacity-80 mb-1"><Folder size={18} className={currentTheme.primary} /> {genre}</div>
             <div className="space-y-1">
@@ -937,6 +964,7 @@ export default function App() {
             </div>
           </div>
         ))}
+        {!isEduMode && (
         <div className="pt-2 px-2">
           {showAddGenre ? (
             <div className="flex gap-1"><input autoFocus value={newGenreName} onChange={e=>setNewGenreName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&confirmAddGenre()} className="text-xs p-1.5 rounded border w-full" placeholder="장르명"/><button onClick={confirmAddGenre} className="bg-green-500 text-white text-xs px-2 rounded">V</button></div>
@@ -944,6 +972,7 @@ export default function App() {
             <button onClick={() => { setShowAddGenre(true); setNewGenreName(''); }} className="flex items-center gap-2 text-xs font-bold opacity-50 hover:opacity-100 hover:text-blue-500 transition-colors w-full p-2"><Plus size={14}/> 장르 추가</button>
           )}
         </div>
+        )}
       </div>
       <div className={`p-6 border-t ${currentTheme.border} flex justify-between bg-black/5 p-1 rounded-full mx-4 mb-4`}>
         <button onClick={() => setTheme('light')} className={`p-2 rounded-full ${theme === 'light' ? 'bg-white shadow' : 'opacity-50'}`}><Sun size={14} /></button>
@@ -1053,39 +1082,80 @@ export default function App() {
             {selectedChapter && viewMode !== 'shelf' && <><ChevronRight size={14}/><button onClick={() => {setViewMode('details'); setSelectedDetail(null);}} className={`hover:opacity-100 hover:text-blue-500 transition-colors truncate max-w-[150px] ${viewMode==='details'?'text-blue-500 font-bold opacity-100':''}`}>{selectedChapter.title}</button></>}
             {selectedDetail && viewMode === 'editor' && <><ChevronRight size={14}/><span className="text-blue-500 font-bold opacity-100 truncate max-w-[150px]">{selectedDetail.title}</span></>}
           </div>
-          <button
-            onClick={() => { setShowSocialPanel(true); loadSocialData(); }}
-            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border ${currentTheme.border} hover:border-blue-400 hover:text-blue-500 transition-all opacity-60 hover:opacity-100`}
-          >
-            <Users size={14}/> 다른 독자
-          </button>
+          {!isTeacher && (
+            <button
+              onClick={() => { setShowSocialPanel(true); loadSocialData(); }}
+              className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border ${currentTheme.border} hover:border-blue-400 hover:text-blue-500 transition-all opacity-60 hover:opacity-100`}
+            >
+              <Users size={14}/> 다른 독자
+            </button>
+          )}
         </header>
 
-        <div className="flex-1 overflow-y-auto p-8">
+        <div className="flex-1 overflow-y-auto p-6">
           <AnimatePresence mode="wait">
             {viewMode === 'shelf' && (
-              <motion.div key="shelf" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-6xl mx-auto">
+              <motion.div key="shelf" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full">
                 {isTeacher ? (
                   /* ── 교사 학급 현황 뷰 ── */
                   <div>
                     {classroomViewChapterId ? (
-                      /* 레벨 3: 학생 노트 읽기 */
-                      <div className="max-w-3xl">
+                      /* 레벨 3: 학생 노트 읽기 + 피드백 */
+                      <div className="w-full">
                         <button onClick={() => setClassroomViewChapterId(null)} className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100 transition-all mb-6`}><ChevronLeft size={13}/> 챕터 목록으로</button>
-                        <div className="space-y-4">
+                        <div className="space-y-5">
                           {(() => {
                             const student = classroomData.find(s => s.id === classroomViewStudentId);
                             const chDets = student?.details?.filter(d => d.chapterId === classroomViewChapterId) || [];
                             if (chDets.length === 0) return <div className="text-sm opacity-40 text-center py-10">작성된 노트가 없습니다.</div>;
-                            return chDets.map((d, i) => (
-                              <div key={i} className={`p-5 rounded-2xl border ${currentTheme.border}`}>
-                                <div className="flex items-center justify-between mb-3">
-                                  <h3 className="font-black text-base">{d.title}</h3>
-                                  <span className="text-xs opacity-40">{d.startPage}–{d.endPage}p</span>
+                            return chDets.map((d, i) => {
+                              const draft = feedbackDraft[d.id] ?? { text: d.teacherFeedback?.text || '', score: d.teacherFeedback?.score ?? '' };
+                              return (
+                                <div key={i} className={`rounded-2xl border-2 ${currentTheme.border} overflow-hidden`}>
+                                  {/* 노트 헤더 */}
+                                  <div className={`flex items-center justify-between px-5 py-3 ${currentTheme.primaryLight}`}>
+                                    <h3 className="font-black text-base">{d.title}</h3>
+                                    <span className="text-xs opacity-50 font-medium">{d.startPage}–{d.endPage}p</span>
+                                  </div>
+                                  {/* 노트 내용 */}
+                                  <div className="px-5 py-4">
+                                    <p className="text-sm leading-relaxed opacity-80 whitespace-pre-wrap">{d.content || '(내용 없음)'}</p>
+                                  </div>
+                                  {/* 교사 피드백 영역 */}
+                                  <div className={`px-5 py-4 border-t-2 border-emerald-100 bg-emerald-50/50`}>
+                                    <div className="text-xs font-black text-emerald-700 mb-2 flex items-center gap-1.5"><GraduationCap size={12}/> 교사 피드백</div>
+                                    <textarea
+                                      value={draft.text}
+                                      onChange={e => setFeedbackDraft(prev => ({ ...prev, [d.id]: { ...draft, text: e.target.value } }))}
+                                      placeholder="피드백을 입력하세요..."
+                                      rows={2}
+                                      className="w-full p-2.5 rounded-xl border border-emerald-200 bg-white text-sm focus:border-emerald-500 outline-none resize-none"
+                                    />
+                                    <div className="flex items-center gap-3 mt-2">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-xs font-bold opacity-60">점수</span>
+                                        <input
+                                          type="number" min="0" max="100"
+                                          value={draft.score}
+                                          onChange={e => setFeedbackDraft(prev => ({ ...prev, [d.id]: { ...draft, score: e.target.value } }))}
+                                          placeholder="0–100"
+                                          className="w-16 p-1.5 rounded-lg border border-emerald-200 bg-white text-sm text-center font-bold focus:border-emerald-500 outline-none"
+                                        />
+                                        <span className="text-xs opacity-40">점</span>
+                                      </div>
+                                      <button
+                                        onClick={() => saveFeedbackToStudent(classroomViewStudentId, d.id, draft.text, draft.score)}
+                                        disabled={feedbackSaving[d.id]}
+                                        className="ml-auto flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 shadow transition-all disabled:opacity-50"
+                                      >
+                                        <Save size={12}/> {feedbackSaving[d.id] ? '저장 중...' : '피드백 저장'}
+                                      </button>
+                                    </div>
+                                    {d.teacherFeedback && <div className="text-[10px] opacity-40 mt-1.5">마지막 저장: {d.teacherFeedback.teacherName} · {d.teacherFeedback.score}점</div>}
+                                  </div>
                                 </div>
-                                <p className="text-sm leading-relaxed opacity-80 whitespace-pre-wrap">{d.content || '(내용 없음)'}</p>
-                              </div>
-                            ));
+                              );
+                            });
                           })()}
                         </div>
                       </div>
@@ -1167,7 +1237,10 @@ export default function App() {
                       <div>
                         <div className="flex items-center justify-between mb-8">
                           <h2 className="text-3xl font-black flex items-center gap-3"><GraduationCap size={32} className="text-emerald-600"/> 학급 현황<span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{classroomData.length}명</span></h2>
-                          <button onClick={loadClassroomData} disabled={isClassroomLoading} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border ${currentTheme.border} hover:border-emerald-400 hover:text-emerald-600 transition-all opacity-60 hover:opacity-100 disabled:opacity-30`}>{isClassroomLoading ? '불러오는 중...' : '🔄 새로고침'}</button>
+                          <button onClick={loadClassroomData} disabled={isClassroomLoading} className={`group flex items-center gap-2 text-sm font-bold px-4 py-2.5 rounded-2xl bg-emerald-500 text-white hover:bg-emerald-600 shadow-md hover:shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed`}>
+                            <svg className={`w-4 h-4 ${isClassroomLoading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                            {isClassroomLoading ? '불러오는 중...' : '새로고침'}
+                          </button>
                         </div>
                         {isClassroomLoading ? (
                           <div className="flex items-center justify-center h-32 text-sm opacity-40 animate-pulse">학생 데이터 불러오는 중...</div>
@@ -1247,7 +1320,7 @@ export default function App() {
               </motion.div>
             )}
             {viewMode === 'chapters' && selectedBook && (
-              <motion.div key="chapters" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-4xl mx-auto">
+              <motion.div key="chapters" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full">
                 <div className="flex justify-end mb-3">
                   <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
                     <ChevronLeft size={13}/> 서재로
@@ -1317,7 +1390,7 @@ export default function App() {
               </motion.div>
             )}
             {viewMode === 'details' && selectedChapter && (
-              <motion.div key="details" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
+              <motion.div key="details" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full h-full flex flex-col">
                 <div className="flex justify-end mb-3">
                   <button onClick={() => {setViewMode('chapters'); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
                     <ChevronLeft size={13}/> 뒤로
@@ -1343,7 +1416,7 @@ export default function App() {
               </motion.div>
             )}
             {viewMode === 'editor' && selectedDetail && (
-              <motion.div key="editor" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto h-full flex flex-col">
+              <motion.div key="editor" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full h-full flex flex-col">
                 <div className="flex justify-end mb-3">
                   <button onClick={() => {setViewMode('details'); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
                     <ChevronLeft size={13}/> 뒤로
@@ -1364,6 +1437,17 @@ export default function App() {
                       <div className="relative aspect-video rounded-2xl overflow-hidden shadow-lg bg-black">
                         <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(selectedDetail.videoUrl)}`} title="video" allowFullScreen></iframe>
                       </div>
+                    </div>
+                  )}
+                  {selectedDetail.teacherFeedback && (
+                    <div className="mt-6 border-t-2 border-emerald-100 pt-5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <GraduationCap size={15} className="text-emerald-600"/>
+                        <span className="text-xs font-black text-emerald-700">선생님 피드백</span>
+                        <span className="ml-auto text-xs font-black text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full">{selectedDetail.teacherFeedback.score}점</span>
+                      </div>
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap text-emerald-900">{selectedDetail.teacherFeedback.text || '(내용 없음)'}</div>
+                      <div className="text-[10px] opacity-40 mt-1.5 text-right">{selectedDetail.teacherFeedback.teacherName} 선생님</div>
                     </div>
                   )}
                 </div>
