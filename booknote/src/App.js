@@ -210,13 +210,30 @@ export default function App() {
   const handleSignup = async () => {
     if (!isSupabaseConfigured) return setAuthError('서버 연결이 설정되지 않았습니다. Vercel 환경 변수(REACT_APP_SUPABASE_URL, REACT_APP_SUPABASE_ANON_KEY)를 추가한 후 재배포해주세요.');
     const name = authName.trim();
+    const isEduSignup = authType === 'education';
     if (!name || !authPassword) return setAuthError('이름과 비밀번호를 입력해주세요.');
+    if (name.length < 2) return setAuthError('이름은 2자 이상이어야 합니다.');
     if (authPassword !== authConfirmPw) return setAuthError('비밀번호가 일치하지 않습니다.');
-    if (authPassword.length < 4) return setAuthError('비밀번호는 4자 이상이어야 합니다.');
+    if (authPassword.length < 8) return setAuthError('비밀번호는 8자 이상이어야 합니다.');
+    if (!/[a-zA-Z가-힣]/.test(authPassword)) return setAuthError('비밀번호에 문자(영문 또는 한글)를 포함해야 합니다.');
+    if (!/[0-9]/.test(authPassword)) return setAuthError('비밀번호에 숫자를 포함해야 합니다.');
+    if (isEduSignup) {
+      const code = authClassCode.trim();
+      if (!code) return setAuthError('교육 버전은 클래스 코드가 필수입니다.');
+      if (code.length < 4) return setAuthError('클래스 코드는 4자 이상이어야 합니다.');
+      if (!/^[a-zA-Z0-9가-힣\-_]+$/.test(code)) return setAuthError('클래스 코드는 영문/숫자/한글/-/_ 만 사용할 수 있습니다.');
+    }
     setIsAuthLoading(true); setAuthError('');
     try {
       const { data: existing } = await supabase.from('booknote_users').select('id').eq('id', name).maybeSingle();
-      if (existing) return setAuthError('이미 사용 중인 이름입니다. 다른 이름을 사용해주세요.');
+      if (existing) {
+        // 기존 계정 타입 확인 (교육/일반 혼용 방지)
+        const { data: exSave } = await supabase.from('booknote_saves').select('data').eq('id', name).maybeSingle();
+        const exMode = exSave?.data?.__meta?.mode || 'personal';
+        if (exMode === 'education' && !isEduSignup) return setAuthError('이 이름은 교육 버전 계정으로 등록되어 있습니다. 교육 버전으로 로그인하거나 다른 이름을 사용하세요.');
+        if (exMode !== 'education' && isEduSignup) return setAuthError('이 이름은 일반 버전 계정으로 등록되어 있습니다. 일반 버전으로 로그인하거나 다른 이름을 사용하세요.');
+        return setAuthError('이미 사용 중인 이름입니다. 다른 이름을 사용해주세요.');
+      }
       const hash = await hashPassword(authPassword);
       const { error } = await supabase.from('booknote_users').insert({ id: name, password_hash: hash, display_name: name });
       if (error) throw error;
@@ -226,7 +243,7 @@ export default function App() {
       setIsAppLoading(true);
       await loadUserData(name, name);
       // 교육 모드: 클래스 코드 저장
-      if (authType === 'education') {
+      if (isEduSignup) {
         const code = authClassCode.trim();
         const baseDb = { [name]: { books: [], chapters: [], details: [], customGenres: [] } };
         const updatedDb = { ...baseDb, __meta: { friends: [], mode: 'education', classCode: code, role: authEduRole } };
@@ -261,6 +278,12 @@ export default function App() {
       if (!user) return setAuthError('존재하지 않는 계정입니다.');
       const hash = await hashPassword(authPassword);
       if (user.password_hash !== hash) return setAuthError('비밀번호가 올바르지 않습니다.');
+      // 계정 타입 일치 검증
+      const { data: saveData } = await supabase.from('booknote_saves').select('data').eq('id', name).maybeSingle();
+      const savedMode = saveData?.data?.__meta?.mode || 'personal';
+      const loginMode = authType === 'education' ? 'education' : 'personal';
+      if (savedMode === 'education' && loginMode !== 'education') return setAuthError('이 계정은 교육 버전 계정입니다. 위에서 [교육] 버튼을 누르고 로그인해주세요.');
+      if (savedMode !== 'education' && loginMode === 'education') return setAuthError('이 계정은 일반 버전 계정입니다. 위에서 [일반] 버튼을 누르고 로그인해주세요.');
       const session = { id: user.id, displayName: user.display_name };
       setCurrentUser(session);
       localStorage.setItem('booknote_session', JSON.stringify(session));
@@ -920,7 +943,7 @@ export default function App() {
                 value={authPassword}
                 onChange={e => { setAuthPassword(e.target.value); setAuthError(''); }}
                 onKeyDown={e => e.key === 'Enter' && (isSignup ? handleSignup() : handleLogin())}
-                placeholder="비밀번호 (4자 이상)"
+                placeholder="비밀번호 (8자 이상, 문자+숫자 필수)"
                 className={`w-full p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
               />
             </div>
@@ -939,12 +962,12 @@ export default function App() {
             )}
             {isSignup && isEdu && (
               <div>
-                <label className="text-xs font-bold mb-1 block text-emerald-600 flex items-center gap-1"><GraduationCap size={11}/> {authEduRole==='teacher'?'학급 코드 설정':'학급 코드 입력'} <span className="opacity-50 font-normal">(선택)</span></label>
+                <label className="text-xs font-bold mb-1 block text-emerald-600 flex items-center gap-1"><GraduationCap size={11}/> {authEduRole==='teacher'?'학급 코드 설정':'학급 코드 입력'} <span className="text-red-500 font-bold">*필수</span></label>
                 <input
                   value={authClassCode}
                   onChange={e => { setAuthClassCode(e.target.value); setAuthError(''); }}
                   onKeyDown={e => e.key === 'Enter' && handleSignup()}
-                  placeholder={authEduRole==='teacher'?'학생들에게 알려줄 코드를 정하세요':'선생님께 받은 코드를 입력하세요'}
+                  placeholder={authEduRole==='teacher'?'4자 이상 · 영문+숫자 조합 권장 (예: class2025)':'선생님께 받은 학급 코드 입력 (필수)'}
                   className={`w-full p-3 rounded-xl border-2 border-emerald-300 bg-transparent outline-none focus:border-emerald-500 text-sm`}
                 />
               </div>
@@ -1371,7 +1394,7 @@ export default function App() {
                         </div>
                         {/* 탭 바 */}
                         <div className={`flex gap-1 p-1 rounded-2xl mb-6 w-fit`} style={{background:'rgba(0,0,0,0.06)'}}>
-                          {[['students','👥 학생 목록'],['announcements','📢 공지사항'],['materials','📚 예시 자료']].map(([key, label]) => (
+                          {[['students','👥 학생 목록'],['announcements','📢 공지사항'],['materials','📚 예시 자료'],['chat','💬 채팅']].map(([key, label]) => (
                             <button key={key} onClick={() => setClassroomTab(key)} className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${classroomTab===key ? 'bg-emerald-600 text-white shadow-md' : 'opacity-50 hover:opacity-80'}`}>{label}</button>
                           ))}
                         </div>
@@ -1423,29 +1446,124 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* 예시 자료 탭 */}
+                        {/* 예시 자료 탭 — 책 카드 방식 */}
                         {classroomTab === 'materials' && (
-                          <div className="space-y-4">
-                            <div className={`p-4 rounded-2xl border-2 border-blue-200 bg-blue-50/40`}>
-                              <div className="text-xs font-black text-blue-700 mb-2">📚 예시 자료 등록</div>
-                              <input value={materialDraft.title} onChange={e => setMaterialDraft(p => ({...p, title: e.target.value}))} placeholder="제목" className="w-full p-2.5 rounded-xl border border-blue-200 bg-white text-sm focus:border-blue-500 outline-none mb-2"/>
-                              <textarea value={materialDraft.content} onChange={e => setMaterialDraft(p => ({...p, content: e.target.value}))} placeholder="내용을 입력하세요..." rows={3} className="w-full p-2.5 rounded-xl border border-blue-200 bg-white text-sm focus:border-blue-500 outline-none resize-none mb-2"/>
-                              <input value={materialDraft.url} onChange={e => setMaterialDraft(p => ({...p, url: e.target.value}))} placeholder="링크 (선택 · YouTube 또는 URL)" className="w-full p-2.5 rounded-xl border border-blue-200 bg-white text-sm focus:border-blue-500 outline-none mb-2"/>
-                              <button onClick={saveMaterialItem} disabled={!materialDraft.title.trim() && !materialDraft.content.trim()} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 shadow transition-all disabled:opacity-40"><Save size={14}/> 자료 등록</button>
-                            </div>
-                            {(databases?.__meta?.materials || []).length === 0 ? (
-                              <div className="text-sm opacity-40 text-center py-8">등록된 예시 자료가 없습니다.</div>
-                            ) : (databases?.__meta?.materials || []).map(mat => (
-                              <div key={mat.id} className={`p-4 rounded-2xl border ${currentTheme.border}`}>
-                                {mat.title && <div className="font-black mb-1">{mat.title}</div>}
-                                {mat.content && <div className="text-sm leading-relaxed whitespace-pre-wrap opacity-80 mb-2">{mat.content}</div>}
-                                {mat.url && (getYoutubeId(mat.url)
-                                  ? <div className="relative aspect-video rounded-xl overflow-hidden bg-black mt-2"><iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(mat.url)}`} title="material" allowFullScreen></iframe></div>
-                                  : <a href={mat.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 text-xs flex items-center gap-1 hover:underline"><ExternalLink size={12}/> {mat.url}</a>
-                                )}
-                                <div className="text-[10px] opacity-30 mt-2">{new Date(mat.ts).toLocaleString('ko-KR')}</div>
+                          <div>
+                            {/* 등록 폼 — 책 추가 스타일 */}
+                            <div className={`mb-6 p-5 rounded-3xl border-2 border-dashed border-blue-300 bg-blue-50/30`}>
+                              <div className="text-sm font-black text-blue-700 mb-4 flex items-center gap-2"><Book size={16}/> 새 예시 자료 등록</div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="md:col-span-2">
+                                  <label className="text-xs font-bold opacity-60 mb-1 block">제목 *</label>
+                                  <input value={materialDraft.title} onChange={e => setMaterialDraft(p => ({...p, title: e.target.value}))} placeholder="예시 자료 제목" className="w-full p-3 rounded-xl border-2 border-blue-200 bg-white text-sm focus:border-blue-500 outline-none font-bold"/>
+                                </div>
+                                <div className="md:col-span-2">
+                                  <label className="text-xs font-bold opacity-60 mb-1 block">내용</label>
+                                  <textarea value={materialDraft.content} onChange={e => setMaterialDraft(p => ({...p, content: e.target.value}))} placeholder="학생들에게 보여줄 내용을 작성하세요..." rows={5} className="w-full p-3 rounded-xl border-2 border-blue-200 bg-white text-sm focus:border-blue-500 outline-none resize-none leading-relaxed"/>
+                                </div>
+                                <div className="md:col-span-2">
+                                  <label className="text-xs font-bold opacity-60 mb-1 block">YouTube 또는 URL (선택)</label>
+                                  <input value={materialDraft.url} onChange={e => setMaterialDraft(p => ({...p, url: e.target.value}))} placeholder="https://youtube.com/watch?v=... 또는 링크" className="w-full p-3 rounded-xl border-2 border-blue-200 bg-white text-sm focus:border-blue-500 outline-none"/>
+                                </div>
                               </div>
-                            ))}
+                              <button onClick={saveMaterialItem} disabled={!materialDraft.title.trim()} className="mt-4 flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 shadow-md transition-all disabled:opacity-40"><Plus size={15}/> 자료 등록</button>
+                            </div>
+                            {/* 자료 카드 그리드 */}
+                            {(databases?.__meta?.materials || []).length === 0 ? (
+                              <div className="text-sm opacity-40 text-center py-12">등록된 예시 자료가 없습니다.</div>
+                            ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                                {(databases?.__meta?.materials || []).map(mat => (
+                                  <div key={mat.id} className={`rounded-3xl border ${currentTheme.border} shadow-sm hover:shadow-lg transition-all flex flex-col overflow-hidden`}>
+                                    {/* 상단: 영상 or 색상 배너 */}
+                                    <div className="h-32 shrink-0 overflow-hidden relative">
+                                      {mat.url && getYoutubeId(mat.url)
+                                        ? <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(mat.url)}`} title="material" allowFullScreen className="w-full h-full"/>
+                                        : <div className="w-full h-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center"><Book size={36} className="text-white opacity-40"/></div>
+                                      }
+                                    </div>
+                                    {/* 하단: 텍스트 정보 */}
+                                    <div className={`flex-1 p-4 ${currentTheme.panel} flex flex-col gap-2`}>
+                                      <div className="font-black text-base leading-snug">{mat.title}</div>
+                                      {mat.content && <p className="text-xs opacity-60 leading-relaxed line-clamp-3 whitespace-pre-wrap">{mat.content}</p>}
+                                      {mat.url && !getYoutubeId(mat.url) && <a href={mat.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 text-xs flex items-center gap-1 hover:underline mt-auto"><ExternalLink size={11}/> 링크 열기</a>}
+                                      <div className="text-[10px] opacity-25 mt-1">{new Date(mat.ts).toLocaleString('ko-KR')}</div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* 채팅 탭 */}
+                        {classroomTab === 'chat' && (
+                          <div className="flex gap-4" style={{height:'calc(100vh - 280px)', minHeight:'480px'}}>
+                            {/* 왼쪽: 학생 목록 */}
+                            <div className={`w-56 shrink-0 border-2 rounded-2xl overflow-hidden flex flex-col border-emerald-200`}>
+                              <div className="px-4 py-3 bg-emerald-600 text-white text-xs font-black shrink-0">대화 상대</div>
+                              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                                {classroomData.length === 0 ? (
+                                  <div className="text-xs opacity-30 text-center py-6">학생이 없습니다</div>
+                                ) : classroomData.map(s => {
+                                  const lastMsg = (s.messages||[]).slice(-1)[0];
+                                  const unread = (s.messages||[]).filter(m => m.from !== currentUser.id).length;
+                                  return (
+                                    <div key={s.id} onClick={() => setClassroomMsgStudentId(s.id)} className={`p-2.5 rounded-xl cursor-pointer transition-all ${classroomMsgStudentId===s.id ? 'bg-emerald-600 text-white' : `hover:bg-emerald-50 ${currentTheme.text}`}`}>
+                                      <div className="flex items-center gap-2">
+                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-sm shrink-0 ${classroomMsgStudentId===s.id ? 'bg-white/20 text-white' : 'bg-emerald-600 text-white'}`}>{s.displayName[0]}</div>
+                                        <div className="flex-1 min-w-0">
+                                          <div className="font-bold text-xs truncate">{s.displayName}</div>
+                                          {lastMsg && <div className={`text-[10px] truncate ${classroomMsgStudentId===s.id ? 'opacity-70' : 'opacity-40'}`}>{lastMsg.text}</div>}
+                                        </div>
+                                        {unread > 0 && classroomMsgStudentId !== s.id && <div className="w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center shrink-0">{unread}</div>}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                            {/* 오른쪽: 채팅 창 */}
+                            <div className={`flex-1 border-2 rounded-2xl overflow-hidden flex flex-col border-emerald-200`}>
+                              {!classroomMsgStudentId ? (
+                                <div className="flex-1 flex items-center justify-center opacity-30">
+                                  <div className="text-center"><Users size={40} className="mx-auto mb-3 opacity-30"/><p className="text-sm font-bold">왼쪽에서 학생을 선택하세요</p></div>
+                                </div>
+                              ) : (() => {
+                                const student = classroomData.find(s => s.id === classroomMsgStudentId);
+                                return (
+                                  <>
+                                    <div className="px-5 py-3 bg-emerald-600 text-white flex items-center gap-3 shrink-0">
+                                      <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center font-black">{student?.displayName[0]}</div>
+                                      <span className="font-black text-base">{student?.displayName}</span>
+                                      <span className="ml-auto text-xs opacity-70">메시지 {(student?.messages||[]).length}개</span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                                      {(student?.messages||[]).length === 0 ? (
+                                        <div className="text-sm opacity-30 text-center py-10">아직 메시지가 없습니다.<br/>먼저 말을 걸어보세요!</div>
+                                      ) : (student?.messages||[]).map((m, i) => (
+                                        <div key={i} className={`flex ${m.from === currentUser.id ? 'justify-end' : 'justify-start'}`}>
+                                          {m.from !== currentUser.id && <div className="w-7 h-7 rounded-full bg-emerald-600 text-white flex items-center justify-center text-xs font-black mr-2 shrink-0 self-end">{student?.displayName[0]}</div>}
+                                          <div className={`max-w-[65%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${m.from === currentUser.id ? 'bg-emerald-600 text-white rounded-tr-sm' : `${currentTheme.panel} border ${currentTheme.border} rounded-tl-sm`}`}>
+                                            {m.text}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div className={`p-4 border-t-2 border-emerald-100 flex gap-3 shrink-0`}>
+                                      <input
+                                        value={messageDraft}
+                                        onChange={e => setMessageDraft(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && classroomMsgStudentId) { sendMessage(classroomMsgStudentId); } }}
+                                        placeholder={`${student?.displayName} 님에게 메시지 입력...`}
+                                        className={`flex-1 text-sm p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-emerald-400`}
+                                      />
+                                      <button onClick={() => classroomMsgStudentId && sendMessage(classroomMsgStudentId)} className="px-5 py-3 bg-emerald-600 text-white text-sm font-bold rounded-xl hover:bg-emerald-700 shadow transition-all shrink-0">전송</button>
+                                    </div>
+                                  </>
+                                );
+                              })()}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -1930,22 +2048,30 @@ export default function App() {
                       ))}
                     </div>
                   )}
-                  {/* 예시 자료 탭 */}
+                  {/* 예시 자료 탭 — 책 카드 스타일 */}
                   {teacherPanelTab === 'materials' && (
-                    <div className="space-y-3">
+                    <div>
                       {teacherInfo.materials.length === 0 ? (
                         <div className="text-sm opacity-40 text-center py-10">등록된 예시 자료가 없습니다.</div>
-                      ) : teacherInfo.materials.map(mat => (
-                        <div key={mat.id} className={`p-4 rounded-2xl border ${currentTheme.border}`}>
-                          {mat.title && <div className="font-black mb-1">{mat.title}</div>}
-                          {mat.content && <div className="text-sm leading-relaxed whitespace-pre-wrap opacity-80 mb-2">{mat.content}</div>}
-                          {mat.url && (getYoutubeId(mat.url)
-                            ? <div className="relative aspect-video rounded-xl overflow-hidden bg-black mt-2"><iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(mat.url)}`} title="material" allowFullScreen></iframe></div>
-                            : <a href={mat.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 text-xs flex items-center gap-1 hover:underline"><ExternalLink size={12}/> {mat.url}</a>
-                          )}
-                          <div className="text-[10px] opacity-30 mt-2">{new Date(mat.ts).toLocaleString('ko-KR')}</div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {teacherInfo.materials.map(mat => (
+                            <div key={mat.id} className={`rounded-2xl border ${currentTheme.border} shadow-sm overflow-hidden flex flex-col`}>
+                              <div className="h-28 shrink-0 overflow-hidden">
+                                {mat.url && getYoutubeId(mat.url)
+                                  ? <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${getYoutubeId(mat.url)}`} title="material" allowFullScreen className="w-full h-full"/>
+                                  : <div className="w-full h-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center"><Book size={28} className="text-white opacity-40"/></div>
+                                }
+                              </div>
+                              <div className={`flex-1 p-3 ${currentTheme.panel}`}>
+                                {mat.title && <div className="font-black text-sm mb-1">{mat.title}</div>}
+                                {mat.content && <p className="text-xs opacity-60 leading-relaxed line-clamp-3 whitespace-pre-wrap">{mat.content}</p>}
+                                {mat.url && !getYoutubeId(mat.url) && <a href={mat.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 text-xs flex items-center gap-1 hover:underline mt-1"><ExternalLink size={10}/> 링크</a>}
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
                     </div>
                   )}
                   {/* 메시지 탭 */}
