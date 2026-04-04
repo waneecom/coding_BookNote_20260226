@@ -5,7 +5,7 @@ import {
   Plus, Moon, Sun, BookOpen, Lock, Globe,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2,
-  UserPlus, UserCheck, GraduationCap
+  UserPlus, UserCheck, GraduationCap, Network, List
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase';
 
@@ -92,6 +92,7 @@ export default function App() {
   const [teacherPanelTab, setTeacherPanelTab] = useState('announcements');
   const [isTeacherInfoLoading, setIsTeacherInfoLoading] = useState(false);
   const [classroomMsgStudentId, setClassroomMsgStudentId] = useState(null); // 교사: 메시지 열린 학생
+  const [showMindMap, setShowMindMap] = useState(false); // 마인드맵 보기 토글
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -1092,6 +1093,69 @@ export default function App() {
     </aside>
   );
 
+  // --- 마인드맵 렌더러 ---
+  const renderMindMap = (centerLabel, nodes, onNodeClick) => {
+    const N = nodes.length;
+    if (N === 0) return <div className="text-center py-16 opacity-40 font-bold">항목이 없습니다</div>;
+    const radius = Math.max(160, Math.min(300, N * 38 + 70));
+    const svgW = (radius + 140) * 2;
+    const svgH = (radius + 110) * 2;
+    const cx = svgW / 2;
+    const cy = svgH / 2;
+    const tc = {
+      sepia:  { centerFill: '#d35400', centerText: '#fff', nodeFill: '#fdf6e3', nodeBorder: '#d35400', nodeText: '#5b4636', line: '#e2c990' },
+      light:  { centerFill: '#2563eb', centerText: '#fff', nodeFill: '#eff6ff', nodeBorder: '#3b82f6', nodeText: '#1e40af', line: '#93c5fd' },
+      dark:   { centerFill: '#1d4ed8', centerText: '#fff', nodeFill: '#1e293b', nodeBorder: '#60a5fa', nodeText: '#93c5fd', line: '#334155' },
+    }[theme] || { centerFill: '#d35400', centerText: '#fff', nodeFill: '#fdf6e3', nodeBorder: '#d35400', nodeText: '#5b4636', line: '#e2c990' };
+    const trunc = (s, n) => s && s.length > n ? s.slice(0, n - 1) + '…' : (s || '');
+
+    return (
+      <div className="w-full overflow-auto py-2 flex justify-center">
+        <svg width={svgW} height={svgH} style={{ minWidth: '340px', maxWidth: '100%' }}>
+          {nodes.map((node, i) => {
+            const angle = N === 1 ? -Math.PI / 2 : (i / N) * 2 * Math.PI - Math.PI / 2;
+            const nx = cx + radius * Math.cos(angle);
+            const ny = cy + radius * Math.sin(angle);
+            const cpx = (cx + nx) / 2 + (ny - cy) * 0.3;
+            const cpy = (cy + ny) / 2 - (nx - cx) * 0.3;
+            return (
+              <path key={`l-${node.id}`}
+                d={`M ${cx} ${cy} Q ${cpx} ${cpy} ${nx} ${ny}`}
+                stroke={tc.line} strokeWidth="2.5" fill="none" strokeLinecap="round" />
+            );
+          })}
+          {/* 중심 노드 */}
+          <rect x={cx - 68} y={cy - 24} width={136} height={48} rx={24} fill={tc.centerFill} />
+          <text x={cx} y={cy + 6} textAnchor="middle" fill={tc.centerText} fontSize={13} fontWeight="bold">
+            {trunc(centerLabel, 13)}
+          </text>
+          {/* 자식 노드 */}
+          {nodes.map((node, i) => {
+            const angle = N === 1 ? -Math.PI / 2 : (i / N) * 2 * Math.PI - Math.PI / 2;
+            const nx = cx + radius * Math.cos(angle);
+            const ny = cy + radius * Math.sin(angle);
+            const line1 = node.index ? `${node.index}.` : '';
+            const line2 = trunc(node.title, 13);
+            return (
+              <g key={node.id} onClick={() => onNodeClick(node)} style={{ cursor: 'pointer' }}>
+                <rect x={nx - 62} y={ny - 26} width={124} height={52} rx={14}
+                  fill={tc.nodeFill} stroke={tc.nodeBorder} strokeWidth="2" />
+                {line1 && (
+                  <text x={nx} y={ny - 5} textAnchor="middle" fill={tc.nodeText} fontSize={10} fontWeight="bold" opacity={0.6}>
+                    {line1}
+                  </text>
+                )}
+                <text x={nx} y={line1 ? ny + 13 : ny + 7} textAnchor="middle" fill={tc.nodeText} fontSize={12} fontWeight="600">
+                  {line2}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    );
+  };
+
   // --- Right Utility Panel ---
   const renderUtilityPanel = () => {
     const videoTargetObj = viewMode === 'editor' ? selectedDetail : (viewMode === 'details' ? selectedChapter : selectedBook);
@@ -1620,7 +1684,11 @@ export default function App() {
             )}
             {viewMode === 'chapters' && selectedBook && (
               <motion.div key="chapters" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full">
-                <div className="flex justify-end mb-3">
+                <div className="flex justify-between mb-3">
+                  <button onClick={() => setShowMindMap(!showMindMap)} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full transition-all ${showMindMap ? `${currentTheme.primaryLight} ${currentTheme.primary}` : 'bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100'}`}>
+                    {showMindMap ? <List size={13}/> : <Network size={13}/>}
+                    {showMindMap ? '목록 보기' : '마인드맵'}
+                  </button>
                   <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
                     <ChevronLeft size={13}/> 서재로
                   </button>
@@ -1670,6 +1738,18 @@ export default function App() {
                     <p className="opacity-70">{selectedBook.contents}</p>
                   </div>
                 )}
+                {showMindMap ? (
+                  <div className={`rounded-2xl border ${currentTheme.border} ${currentTheme.panel} p-4`}>
+                    {renderMindMap(
+                      selectedBook.title,
+                      chapters.filter(c => c.bookId === selectedBook.id),
+                      (chapter) => { setSelectedChapter(chapter); setViewMode('details'); }
+                    )}
+                    <div className="mt-3 text-center">
+                      <button onClick={handleAddChapter} className={`text-xs font-bold px-4 py-1.5 rounded-full border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100`}>+ 챕터 추가</button>
+                    </div>
+                  </div>
+                ) : (
                 <div className="space-y-3">
                   {chapters.filter(c => c.bookId === selectedBook.id).map(chapter => (
                     <motion.div key={chapter.id} onClick={() => { setSelectedChapter(chapter); setViewMode('details'); }} className={`p-5 rounded-2xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-lg transition-all cursor-pointer flex items-center justify-between group`}>
@@ -1686,17 +1766,34 @@ export default function App() {
                   ))}
                   <button onClick={handleAddChapter} className={`w-full p-4 rounded-2xl border-2 border-dashed ${currentTheme.border} text-center opacity-50 hover:opacity-100 font-bold`}>+ 챕터 추가</button>
                 </div>
+                )}
               </motion.div>
             )}
             {viewMode === 'details' && selectedChapter && (
               <motion.div key="details" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full h-full flex flex-col">
-                <div className="flex justify-end mb-3">
+                <div className="flex justify-between mb-3">
+                  <button onClick={() => setShowMindMap(!showMindMap)} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full transition-all ${showMindMap ? `${currentTheme.primaryLight} ${currentTheme.primary}` : 'bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100'}`}>
+                    {showMindMap ? <List size={13}/> : <Network size={13}/>}
+                    {showMindMap ? '목록 보기' : '마인드맵'}
+                  </button>
                   <button onClick={() => {setViewMode('chapters'); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
                     <ChevronLeft size={13}/> 뒤로
                   </button>
                 </div>
+                <h2 className="text-3xl font-black mb-4 flex items-center gap-2"><span className={currentTheme.primary}>#{selectedChapter.index}</span> <input value={selectedChapter.title} onChange={e=>{const n=e.target.value;setSelectedChapter({...selectedChapter,title:n});setChapters(chapters.map(c=>c.id===selectedChapter.id?{...c,title:n}:c))}} className="bg-transparent outline-none w-full"/></h2>
+                {showMindMap ? (
+                  <div className={`rounded-2xl border ${currentTheme.border} ${currentTheme.panel} p-4`}>
+                    {renderMindMap(
+                      selectedChapter.title,
+                      details.filter(d => d.chapterId === selectedChapter.id),
+                      (detail) => { setSelectedDetail(detail); setViewMode('editor'); }
+                    )}
+                    <div className="mt-3 text-center">
+                      <button onClick={handleAddDetail} className={`text-xs font-bold px-4 py-1.5 rounded-full border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100`}>+ 세부 노트 추가</button>
+                    </div>
+                  </div>
+                ) : (
                 <div className="space-y-3">
-                  <h2 className="text-3xl font-black mb-6 flex items-center gap-2"><span className={currentTheme.primary}>#{selectedChapter.index}</span> <input value={selectedChapter.title} onChange={e=>{const n=e.target.value;setSelectedChapter({...selectedChapter,title:n});setChapters(chapters.map(c=>c.id===selectedChapter.id?{...c,title:n}:c))}} className="bg-transparent outline-none w-full"/></h2>
                   {details.filter(d=>d.chapterId===selectedChapter.id).map(detail=>(
                     <div key={detail.id} onClick={()=>{setSelectedDetail(detail);setViewMode('editor')}} className={`p-4 rounded-xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-md cursor-pointer flex justify-between items-center group`}>
                       <span className="font-bold">{detail.title}</span>
@@ -1712,6 +1809,7 @@ export default function App() {
                   ))}
                   <button onClick={handleAddDetail} className={`w-full p-4 rounded-xl border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100 font-bold`}>+ 세부 노트 추가</button>
                 </div>
+                )}
               </motion.div>
             )}
             {viewMode === 'editor' && selectedDetail && (
