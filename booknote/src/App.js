@@ -93,6 +93,7 @@ export default function App() {
   const [isTeacherInfoLoading, setIsTeacherInfoLoading] = useState(false);
   const [classroomMsgStudentId, setClassroomMsgStudentId] = useState(null); // 교사: 메시지 열린 학생
   const [bookMode, setBookMode] = useState('list'); // 'list' | 'mindmap' | 'journal'
+  const [teacherNotesView, setTeacherNotesView] = useState(false); // 교사: true=내 노트, false=학급현황
   const [mmDrag, setMmDrag] = useState(null); // { t:'ch'|'d', id, ox, oy }
   const [mmEditKey, setMmEditKey] = useState(null); // 'ch-{id}' | 'd-{id}'
   const [mmEditText, setMmEditText] = useState('');
@@ -305,8 +306,8 @@ export default function App() {
       if (user.password_hash !== hash) return setAuthError('비밀번호가 올바르지 않습니다.');
       // 계정 타입 일치 검증 (__meta가 실제로 있는 경우에만 검사)
       const { data: saveData } = await supabase.from('booknote_saves').select('data').eq('id', name).maybeSingle();
-      if (saveData?.data?.__meta?.mode) {
-        const savedMode = saveData.data.__meta.mode;
+      if (saveData?.data) {
+        const savedMode = saveData.data?.__meta?.mode || 'personal';
         const loginMode = authType === 'education' ? 'education' : 'personal';
         if (savedMode === 'education' && loginMode !== 'education') return setAuthError('이 계정은 교육 버전 계정입니다. 위에서 [교육] 버튼을 누르고 로그인해주세요.');
         if (savedMode !== 'education' && loginMode === 'education') return setAuthError('이 계정은 일반 버전 계정입니다. 위에서 [일반] 버튼을 누르고 로그인해주세요.');
@@ -938,6 +939,13 @@ export default function App() {
     }
   }, [isTeacher, isAppLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 교사: 30초마다 학급 현황 자동 갱신
+  useEffect(() => {
+    if (!isTeacher || isAppLoading) return;
+    const interval = setInterval(() => { loadClassroomData(); }, 30000);
+    return () => clearInterval(interval);
+  }, [isTeacher, isAppLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const usedGenres = [...new Set([...customGenres, ...books.flatMap(b => Array.isArray(b.category) ? b.category : [b.category])])].filter(g => g && g !== '');
   const handleDragStart = (e, bookId) => { setDraggedBookId(bookId); e.dataTransfer.effectAllowed = "move"; };
   const handleDragOver = (e, genre) => { e.preventDefault(); if (dragOverGenre !== genre) setDragOverGenre(genre); };
@@ -1354,7 +1362,7 @@ export default function App() {
           <AnimatePresence mode="wait">
             {viewMode === 'shelf' && (
               <motion.div key="shelf" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full">
-                {isTeacher ? (
+                {isTeacher && !teacherNotesView ? (
                   /* ── 교사 학급 현황 뷰 ── */
                   <div>
                     {classroomViewChapterId ? (
@@ -1527,10 +1535,13 @@ export default function App() {
                       <div>
                         <div className="flex items-center justify-between mb-6">
                           <h2 className="text-3xl font-black flex items-center gap-3"><GraduationCap size={32} className="text-emerald-600"/> 학급 현황<span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{classroomData.length}명</span></h2>
-                          <button onClick={loadClassroomData} disabled={isClassroomLoading} className={`group flex items-center gap-2 text-sm font-bold px-4 py-2.5 rounded-2xl bg-emerald-500 text-white hover:bg-emerald-600 shadow-md hover:shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed`}>
-                            <svg className={`w-4 h-4 ${isClassroomLoading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                            {isClassroomLoading ? '불러오는 중...' : '새로고침'}
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => setTeacherNotesView(true)} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2.5 rounded-2xl bg-black/5 hover:bg-black/10 transition-all"><BookOpen size={15}/> 내 노트</button>
+                            <button onClick={loadClassroomData} disabled={isClassroomLoading} className={`group flex items-center gap-2 text-sm font-bold px-4 py-2.5 rounded-2xl bg-emerald-500 text-white hover:bg-emerald-600 shadow-md hover:shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed`}>
+                              <svg className={`w-4 h-4 ${isClassroomLoading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                              {isClassroomLoading ? '불러오는 중...' : '새로고침'}
+                            </button>
+                          </div>
                         </div>
                         {/* 탭 바 */}
                         <div className={`flex gap-1 p-1 rounded-2xl mb-6 w-fit`} style={{background:'rgba(0,0,0,0.06)'}}>
@@ -1712,6 +1723,7 @@ export default function App() {
                 ) : (
                   /* ── 일반 학생/개인 서재 뷰 ── */
                   <div>
+                {isTeacher && <button onClick={() => setTeacherNotesView(false)} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-all mb-5 shrink-0"><ChevronLeft size={13}/> 학급 현황으로</button>}
                 <h2 className="text-3xl font-black mb-8 flex items-center gap-2">{currentLibrary} 님의 도서 <span className="text-sm font-normal bg-black/10 px-2 py-1 rounded-full">{books.length}권</span></h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {books.map(book => (
@@ -1827,6 +1839,9 @@ export default function App() {
                               onClick={e => e.stopPropagation()}
                               className="flex-1 text-xl font-black bg-transparent outline-none cursor-text"
                             />
+                            <button onClick={e=>{e.stopPropagation();const v=ch.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setChapters(p=>p.map(c=>c.id===ch.id?{...c,visibility:next[v]}:c));}} className={`p-1 rounded-full transition-all shrink-0 ${(ch.visibility&&ch.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
+                              {ch.visibility==='private'?<Lock size={13} className="text-red-400"/>:ch.visibility==='friends'?<Users size={13} className="text-blue-400"/>:<Globe size={13} className="text-gray-400"/>}
+                            </button>
                             <ChevronRight size={16} className="opacity-30 shrink-0"/>
                             <button onClick={(e) => handleDeleteChapter(e, ch.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1 shrink-0"><Trash2 size={16}/></button>
                           </div>
@@ -1846,6 +1861,9 @@ export default function App() {
                                     className="flex-1 font-bold text-base bg-transparent outline-none cursor-text"
                                   />
                                   <span className="text-xs opacity-40 shrink-0">{d.startPage}-{d.endPage}p</span>
+                                  <button onClick={e=>{e.stopPropagation();const v=d.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setDetails(p=>p.map(dd=>dd.id===d.id?{...dd,visibility:next[v]}:dd));}} className={`p-1 rounded-full transition-all shrink-0 ${(d.visibility&&d.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
+                                    {d.visibility==='private'?<Lock size={12} className="text-red-400"/>:d.visibility==='friends'?<Users size={12} className="text-blue-400"/>:<Globe size={12} className="text-gray-400"/>}
+                                  </button>
                                   <ChevronRight size={13} className="opacity-20 shrink-0"/>
                                   <button onClick={e => handleDeleteDetail(e, d.id)} className="opacity-0 group-hover:opacity-60 text-gray-400 hover:text-red-500 transition-opacity p-1 shrink-0"><Trash2 size={14}/></button>
                                 </div>
@@ -1993,7 +2011,7 @@ export default function App() {
                                       ) : (
                                         <span className="text-xs font-semibold select-none" style={{color}}
                                           onDoubleClick={e=>{e.stopPropagation();setMmEditKey(`d-${d.id}`);setMmEditText(d.title);}}>
-                                          {d.title.length>14?d.title.slice(0,13)+'…':d.title}
+                                          {(()=>{const t=(d.content||'').trim()||d.title;return t.length>18?t.slice(0,17)+'…':t;})()}
                                         </span>
                                       )}
                                       <button onClick={e=>{e.stopPropagation();if(window.confirm('삭제하시겠습니까?'))setDetails(p=>p.filter(dd=>dd.id!==d.id));}}
