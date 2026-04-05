@@ -5,7 +5,7 @@ import {
   Plus, Moon, Sun, BookOpen, Lock, Globe,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2,
-  UserPlus, UserCheck, GraduationCap, Network, List
+  UserPlus, UserCheck, GraduationCap, Star
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase';
 
@@ -92,7 +92,10 @@ export default function App() {
   const [teacherPanelTab, setTeacherPanelTab] = useState('announcements');
   const [isTeacherInfoLoading, setIsTeacherInfoLoading] = useState(false);
   const [classroomMsgStudentId, setClassroomMsgStudentId] = useState(null); // 교사: 메시지 열린 학생
-  const [showMindMap, setShowMindMap] = useState(false); // 마인드맵 보기 토글
+  const [bookMode, setBookMode] = useState('list'); // 'list' | 'mindmap' | 'journal'
+  const [mmDrag, setMmDrag] = useState(null); // { t:'ch'|'d', id, ox, oy }
+  const [mmEditKey, setMmEditKey] = useState(null); // 'ch-{id}' | 'd-{id}'
+  const [mmEditText, setMmEditText] = useState('');
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -104,6 +107,8 @@ export default function App() {
   // --- 자동저장 refs ---
   const autoSaveTimerRef = useRef(null);
   const isInitialized = useRef(false);
+  const mmRef = useRef(null);
+  const mmMovedRef = useRef(false);
   // stale closure 방지: setTimeout 내부에서 항상 최신값 참조
   const databasesRef = useRef(databases);
   const currentLibraryRef = useRef(currentLibrary);
@@ -602,6 +607,67 @@ export default function App() {
     setDetails(details.filter(d => d.id !== id));
     if (selectedDetail?.id === id) { setSelectedDetail(null); setViewMode('details'); }
   };
+
+  // ─── 마인드맵 에디터 헬퍼 ───────────────────────────────
+  const MM_W = 1900, MM_H = 1060, MM_CX = 950, MM_CY = 530;
+  const MM_COLORS = ['#e06a3a','#3d8fc7','#45a872','#8b63c4','#c9953a','#31a8a8','#c94f7a','#7aaa42'];
+
+  const mmChPos = (ch, i, n) => {
+    if (ch.mapX != null) return { x: ch.mapX, y: ch.mapY };
+    const a = n === 1 ? -Math.PI / 2 : (i / n) * 2 * Math.PI - Math.PI / 2;
+    const r = 280 + (i % 3) * 30;
+    return { x: MM_CX + r * Math.cos(a), y: MM_CY + r * Math.sin(a) };
+  };
+
+  const mmDetPos = (d, di, dn, chPos, ci, cn) => {
+    if (d.mapX != null) return { x: d.mapX, y: d.mapY };
+    const baseA = cn === 1 ? -Math.PI / 2 : (ci / cn) * 2 * Math.PI - Math.PI / 2;
+    const spread = dn <= 1 ? 0 : (di - (dn - 1) / 2) * 0.68;
+    const a = baseA + spread;
+    return { x: chPos.x + 200 * Math.cos(a), y: chPos.y + 200 * Math.sin(a) };
+  };
+
+  const handleMmMove = (e) => {
+    if (!mmDrag || !mmRef.current) return;
+    mmMovedRef.current = true;
+    const rect = mmRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left + mmRef.current.scrollLeft - mmDrag.ox;
+    const y = e.clientY - rect.top + mmRef.current.scrollTop - mmDrag.oy;
+    if (mmDrag.t === 'ch') setChapters(p => p.map(c => c.id === mmDrag.id ? { ...c, mapX: Math.max(60, Math.min(MM_W - 60, x)), mapY: Math.max(30, Math.min(MM_H - 30, y)) } : c));
+    else setDetails(p => p.map(d => d.id === mmDrag.id ? { ...d, mapX: Math.max(60, Math.min(MM_W - 60, x)), mapY: Math.max(30, Math.min(MM_H - 30, y)) } : d));
+  };
+
+  const handleMmUp = () => setMmDrag(null);
+
+  const startMmDrag = (e, t, id, pos) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!mmRef.current) return;
+    mmMovedRef.current = false;
+    const rect = mmRef.current.getBoundingClientRect();
+    setMmDrag({ t, id, ox: e.clientX - rect.left + mmRef.current.scrollLeft - pos.x, oy: e.clientY - rect.top + mmRef.current.scrollTop - pos.y });
+  };
+
+  const mmCommit = () => {
+    if (!mmEditKey) return;
+    const txt = mmEditText.trim();
+    if (txt) {
+      if (mmEditKey.startsWith('ch-')) { const id = parseInt(mmEditKey.slice(3)); setChapters(p => p.map(c => c.id === id ? { ...c, title: txt } : c)); }
+      else { const id = parseInt(mmEditKey.slice(2)); setDetails(p => p.map(d => d.id === id ? { ...d, title: txt } : d)); }
+    }
+    setMmEditKey(null); setMmEditText('');
+  };
+
+  const mmAddCh = () => {
+    if (!selectedBook) return;
+    const n = chapters.filter(c => c.bookId === selectedBook.id).length + 1;
+    setChapters(p => [...p, { id: Date.now(), bookId: selectedBook.id, index: n.toString(), title: `챕터 ${n}`, videoUrl: '' }]);
+  };
+
+  const mmAddDet = (chId) => {
+    const n = details.filter(d => d.chapterId === chId).length + 1;
+    setDetails(p => [...p, { id: Date.now(), chapterId: chId, index: n.toString(), title: `세부 항목 ${n}`, startPage: 1, endPage: 10, content: '', videoUrl: '' }]);
+  };
+  // ─────────────────────────────────────────────────────────
 
   const handleDeleteLibrary = () => {
     const owners = Object.keys(databases).filter(k => !k.startsWith('__'));
@@ -1684,123 +1750,278 @@ export default function App() {
             )}
             {viewMode === 'chapters' && selectedBook && (
               <motion.div key="chapters" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full">
-                <div className="flex justify-between mb-3">
-                  <button onClick={() => setShowMindMap(!showMindMap)} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full transition-all ${showMindMap ? `${currentTheme.primaryLight} ${currentTheme.primary}` : 'bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100'}`}>
-                    {showMindMap ? <List size={13}/> : <Network size={13}/>}
-                    {showMindMap ? '목록 보기' : '마인드맵'}
-                  </button>
+                {/* ── 상단: 모드 탭 + 서재로 버튼 ── */}
+                <div className="flex justify-between items-center mb-5">
+                  <div className="flex gap-1.5">
+                    {[['list','📋 목록'],['mindmap','🗺️ 마인드맵'],['journal','📖 독서록']].map(([m, label]) => (
+                      <button key={m} onClick={() => setBookMode(m)}
+                        className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all ${bookMode===m ? `${currentTheme.primaryBg} text-white shadow-md` : 'bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100'}`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                   <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
                     <ChevronLeft size={13}/> 서재로
                   </button>
                 </div>
-                <div className="mb-8 flex gap-8">
-                  <label className={`w-32 h-44 rounded-xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center cursor-pointer hover:opacity-70 overflow-hidden relative ${selectedBook.coverUrl?'':'bg-black/5'}`}>
+
+                {/* ── 책 정보 (항상 표시) ── */}
+                <div className="mb-6 flex gap-8">
+                  <label className={`w-28 h-40 rounded-xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center cursor-pointer hover:opacity-70 overflow-hidden relative shrink-0 ${selectedBook.coverUrl?'':'bg-black/5'}`}>
                     {selectedBook.coverUrl ? <img src={selectedBook.coverUrl} className="w-full h-full object-cover" alt="cover"/> : <span className="text-xs opacity-50 text-center p-2">표지 추가</span>}
                     <input type="file" accept="image/*" className="hidden" onChange={e=>{if(e.target.files[0]) updateBook(selectedBook.id, {coverUrl: URL.createObjectURL(e.target.files[0])})}} />
                   </label>
-                  <div className="flex-1">
-                    <div className="flex flex-col gap-2 mb-4">
-                      <div className="flex items-center gap-2">
-                        <h2 className="text-4xl font-black">{selectedBook.title}</h2>
-                        <button onClick={()=>setEditingBookId(selectedBook.id)} className="text-gray-400 hover:text-blue-500"><Edit3 size={20}/></button>
-                        <button onClick={()=>{ if(window.confirm(`"${selectedBook.title}"을 삭제하시겠습니까?\n(모든 챕터와 노트가 삭제됩니다)`)) handleDeleteBook(selectedBook.id); }} className="text-gray-400 hover:text-red-500"><Trash2 size={18}/></button>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="w-48 h-3 rounded-full bg-black/10 overflow-hidden"><div style={{width: `${calculateProgress(selectedBook.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}></div></div>
-                        <span className={`text-lg font-bold ${currentTheme.primary}`}>{calculateProgress(selectedBook.id)}% 읽음</span>
-                        {calculateProgress(selectedBook.id) === 100 && <span className="flex items-center gap-1 bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full text-xs font-bold"><Award size={14}/> 완독 달성!</span>}
-                      </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-2">
+                      <h2 className="text-3xl font-black truncate">{selectedBook.title}</h2>
+                      <button onClick={()=>setEditingBookId(selectedBook.id)} className="text-gray-400 hover:text-blue-500 shrink-0"><Edit3 size={18}/></button>
+                      <button onClick={()=>{ if(window.confirm(`"${selectedBook.title}"을 삭제하시겠습니까?`)) handleDeleteBook(selectedBook.id); }} className="text-gray-400 hover:text-red-500 shrink-0"><Trash2 size={16}/></button>
                     </div>
-                    <div className="space-y-2 text-sm opacity-80">
-                      <div className="flex items-center gap-2"><span>저자:</span><input value={selectedBook.author} onChange={e=>updateBook(selectedBook.id,{author:e.target.value})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-32"/></div>
-                      <div className="flex items-center gap-2"><span>장르:</span><input value={localCategory} onChange={e=>setLocalCategory(e.target.value)} onBlur={()=>{updateBook(selectedBook.id,{category:localCategory.split(',').map(s=>s.trim())})}} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-48" placeholder="예: 소설, 과학"/></div>
-                      <div className="flex items-center gap-2"><span>총 페이지:</span><input type="number" value={selectedBook.totalPages} onChange={e=>updateBook(selectedBook.id,{totalPages:parseInt(e.target.value)||0})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-16 font-bold"/>쪽</div>
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-40 h-2.5 rounded-full bg-black/10 overflow-hidden"><div style={{width:`${calculateProgress(selectedBook.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}/></div>
+                      <span className={`text-sm font-bold ${currentTheme.primary}`}>{calculateProgress(selectedBook.id)}% 읽음</span>
+                      {calculateProgress(selectedBook.id)===100 && <span className="flex items-center gap-1 bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full text-xs font-bold"><Award size={12}/> 완독!</span>}
+                    </div>
+                    <div className="space-y-1.5 text-sm opacity-80">
+                      <div className="flex items-center gap-2"><span>저자:</span><input value={selectedBook.author} onChange={e=>updateBook(selectedBook.id,{author:e.target.value})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-28"/></div>
+                      <div className="flex items-center gap-2"><span>총 페이지:</span><input type="number" value={selectedBook.totalPages} onChange={e=>updateBook(selectedBook.id,{totalPages:parseInt(e.target.value)||0})} className="bg-transparent border-b border-dashed border-gray-400 focus:border-blue-500 outline-none w-14 font-bold"/>쪽</div>
                       {selectedBook.publisher && <div className="flex items-center gap-2"><span>출판사:</span><span className="font-medium">{selectedBook.publisher}</span></div>}
-                      {selectedBook.publishedDate && <div className="flex items-center gap-2"><span>출판일:</span><span className="font-medium">{selectedBook.publishedDate}</span></div>}
-                      {selectedBook.salePrice > 0 && <div className="flex items-center gap-2"><span>판매가:</span><span className={`font-bold ${currentTheme.primary}`}>{selectedBook.salePrice.toLocaleString()}원</span></div>}
-                      {selectedBook.url && <div className="flex items-center gap-2"><span>링크:</span><a href={selectedBook.url} target="_blank" rel="noopener noreferrer" className={`${currentTheme.primary} hover:underline flex items-center gap-1`}>도서 정보 보기 <ExternalLink size={12}/></a></div>}
-                      <div className="flex items-center gap-2 pt-1">
-                        <span>공개:</span>
-                        <div className="flex gap-1">
-                          {[['private','비공개',Lock],['friends','친구만',Users],['public','전체공개',Globe]].map(([v, label, Icon]) => (
-                            <button key={v} onClick={()=>updateBook(selectedBook.id,{visibility:v})} className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-bold border transition-all ${(selectedBook.visibility||'private')===v?v==='public'?'bg-green-100 text-green-700 border-green-300':v==='friends'?'bg-blue-100 text-blue-700 border-blue-300':'bg-black/10 border-black/20':'bg-transparent border-transparent opacity-40 hover:opacity-70'}`}>
-                              <Icon size={10}/>{label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                      {selectedBook.url && <a href={selectedBook.url} target="_blank" rel="noopener noreferrer" className={`${currentTheme.primary} hover:underline flex items-center gap-1 text-xs`}>도서 정보 보기 <ExternalLink size={11}/></a>}
                     </div>
                   </div>
                 </div>
                 {selectedBook.contents && (
-                  <div className={`mb-6 p-4 rounded-2xl ${currentTheme.primaryLight} text-sm leading-relaxed`}>
-                    <div className={`text-xs font-bold mb-1.5 ${currentTheme.primary} opacity-70`}>도서 소개</div>
-                    <p className="opacity-70">{selectedBook.contents}</p>
+                  <div className={`mb-5 p-3.5 rounded-2xl ${currentTheme.primaryLight} text-sm`}>
+                    <div className={`text-xs font-bold mb-1 ${currentTheme.primary} opacity-70`}>도서 소개</div>
+                    <p className="opacity-70 line-clamp-2">{selectedBook.contents}</p>
                   </div>
                 )}
-                {showMindMap ? (
-                  <div className={`rounded-2xl border ${currentTheme.border} ${currentTheme.panel} p-4`}>
-                    {renderMindMap(
-                      selectedBook.title,
-                      chapters.filter(c => c.bookId === selectedBook.id),
-                      (chapter) => { setSelectedChapter(chapter); setViewMode('details'); }
-                    )}
-                    <div className="mt-3 text-center">
-                      <button onClick={handleAddChapter} className={`text-xs font-bold px-4 py-1.5 rounded-full border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100`}>+ 챕터 추가</button>
-                    </div>
+
+                {/* ── 목록 모드 ── */}
+                {bookMode === 'list' && (
+                  <div className="space-y-3">
+                    {chapters.filter(c => c.bookId === selectedBook.id).map(chapter => (
+                      <motion.div key={chapter.id} onClick={() => { setSelectedChapter(chapter); setViewMode('details'); }} className={`p-5 rounded-2xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-lg transition-all cursor-pointer flex items-center justify-between group`}>
+                        <div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-lg flex items-center justify-center font-black ${currentTheme.primaryLight} ${currentTheme.primary}`}>{chapter.index}</div><span className="font-bold text-lg">{chapter.title}</span></div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={(e)=>{e.stopPropagation();const v=chapter.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setChapters(chapters.map(c=>c.id===chapter.id?{...c,visibility:next[v]}:c));}} className={`p-1 rounded-full transition-all ${(chapter.visibility&&chapter.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
+                            {chapter.visibility==='private'?<Lock size={13} className="text-red-400"/>:chapter.visibility==='friends'?<Users size={13} className="text-blue-400"/>:<Globe size={13} className="text-gray-400"/>}
+                          </button>
+                          <button onClick={(e) => handleDeleteChapter(e, chapter.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={16}/></button>
+                          <ChevronRight size={20} className="opacity-30"/>
+                        </div>
+                      </motion.div>
+                    ))}
+                    <button onClick={handleAddChapter} className={`w-full p-4 rounded-2xl border-2 border-dashed ${currentTheme.border} text-center opacity-50 hover:opacity-100 font-bold`}>+ 챕터 추가</button>
                   </div>
-                ) : (
-                <div className="space-y-3">
-                  {chapters.filter(c => c.bookId === selectedBook.id).map(chapter => (
-                    <motion.div key={chapter.id} onClick={() => { setSelectedChapter(chapter); setViewMode('details'); }} className={`p-5 rounded-2xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-lg transition-all cursor-pointer flex items-center justify-between group`}>
-                      <div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-lg flex items-center justify-center font-black ${currentTheme.primaryLight} ${currentTheme.primary}`}>{chapter.index}</div><span className="font-bold text-lg">{chapter.title}</span></div>
-                      <div className="flex items-center gap-2">
-                        {/* 챕터 공개 설정 */}
-                        <button onClick={(e)=>{e.stopPropagation();const v=chapter.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setChapters(chapters.map(c=>c.id===chapter.id?{...c,visibility:next[v]}:c));}} title="챕터 공개 설정" className={`p-1 rounded-full transition-all ${(chapter.visibility&&chapter.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
-                          {chapter.visibility==='private'?<Lock size={13} className="text-red-400"/>:chapter.visibility==='friends'?<Users size={13} className="text-blue-400"/>:<Globe size={13} className="text-gray-400"/>}
-                        </button>
-                        <button onClick={(e) => handleDeleteChapter(e, chapter.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={16}/></button>
-                        <ChevronRight size={20} className="opacity-30"/>
+                )}
+
+                {/* ── 마인드맵 에디터 ── */}
+                {bookMode === 'mindmap' && (() => {
+                  const bkChaps = chapters.filter(c => c.bookId === selectedBook.id);
+                  const edges = [];
+                  const chNodes = bkChaps.map((ch, ci) => {
+                    const chPos = mmChPos(ch, ci, bkChaps.length);
+                    const color = MM_COLORS[ci % MM_COLORS.length];
+                    edges.push({ fx: MM_CX, fy: MM_CY, tx: chPos.x, ty: chPos.y, color, w: 5 });
+                    const dets = details.filter(d => d.chapterId === ch.id);
+                    dets.forEach((d, di) => {
+                      const dp = mmDetPos(d, di, dets.length, chPos, ci, bkChaps.length);
+                      edges.push({ fx: chPos.x, fy: chPos.y, tx: dp.x, ty: dp.y, color, w: 2.5 });
+                    });
+                    return { ch, chPos, color, ci, dets };
+                  });
+                  return (
+                    <div className="relative">
+                      <div ref={mmRef}
+                        className={`rounded-2xl border ${currentTheme.border} overflow-auto`}
+                        style={{ height:'calc(100vh - 430px)', minHeight:'480px', cursor: mmDrag?'grabbing':'default', userSelect:'none', background: theme==='dark'?'#0f172a': theme==='sepia'?'#fdf8f0':'#f8fafc' }}
+                        onMouseMove={handleMmMove} onMouseUp={handleMmUp} onMouseLeave={handleMmUp}>
+                        <div style={{ width:MM_W, height:MM_H, position:'relative' }}>
+                          {/* SVG 연결선 */}
+                          <svg style={{ position:'absolute', inset:0, width:'100%', height:'100%', pointerEvents:'none' }}>
+                            {edges.map((e, i) => {
+                              const mx = (e.fx + e.tx) / 2;
+                              return (
+                                <path key={i}
+                                  d={`M ${e.fx} ${e.fy} C ${mx} ${e.fy} ${mx} ${e.ty} ${e.tx} ${e.ty}`}
+                                  stroke={e.color} strokeWidth={e.w} fill="none" strokeLinecap="round" opacity={0.7}/>
+                              );
+                            })}
+                          </svg>
+                          {/* 책 루트 노드 */}
+                          <div style={{ position:'absolute', left:MM_CX, top:MM_CY, transform:'translate(-50%,-50%)', zIndex:10 }}
+                            className={`w-40 h-14 flex items-center justify-center rounded-full ${currentTheme.primaryBg} text-white font-black text-sm text-center shadow-2xl px-3`}>
+                            {(selectedBook.title||'').length > 16 ? selectedBook.title.slice(0,15)+'…' : selectedBook.title}
+                          </div>
+                          {/* 챕터 + 세부 노드 */}
+                          {chNodes.map(({ ch, chPos, color, ci, dets }) => (
+                            <div key={ch.id}>
+                              {/* 챕터 노드 */}
+                              <div style={{ position:'absolute', left:chPos.x, top:chPos.y, transform:'translate(-50%,-50%)', zIndex:8 }}
+                                className="group"
+                                onMouseDown={e => startMmDrag(e, 'ch', ch.id, chPos)}>
+                                <div style={{ border:`3px solid ${color}`, background: theme==='dark'?'#1e293b':'#fff', cursor: mmDrag?.id===ch.id?'grabbing':'grab' }}
+                                  className="rounded-2xl px-4 py-2.5 shadow-lg min-w-[120px] text-center relative">
+                                  {mmEditKey===`ch-${ch.id}` ? (
+                                    <input autoFocus value={mmEditText}
+                                      onChange={e=>setMmEditText(e.target.value)}
+                                      onBlur={mmCommit}
+                                      onKeyDown={e=>{if(e.key==='Enter')mmCommit();if(e.key==='Escape')setMmEditKey(null);}}
+                                      className="bg-transparent outline-none text-sm font-bold w-full text-center"
+                                      style={{color}} onClick={e=>e.stopPropagation()}/>
+                                  ) : (
+                                    <span className="text-sm font-bold select-none" style={{color}}
+                                      onDoubleClick={e=>{e.stopPropagation();setMmEditKey(`ch-${ch.id}`);setMmEditText(ch.title);}}>
+                                      {ch.title.length>15?ch.title.slice(0,14)+'…':ch.title}
+                                    </span>
+                                  )}
+                                  {/* 삭제 버튼 */}
+                                  <button onClick={e=>{e.stopPropagation();if(window.confirm('이 챕터를 삭제하시겠습니까?')){setChapters(p=>p.filter(c=>c.id!==ch.id));setDetails(p=>p.filter(d=>d.chapterId!==ch.id));}}}
+                                    className="absolute -top-2.5 -right-2.5 w-5 h-5 rounded-full bg-red-500 text-white text-[11px] items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity flex">×</button>
+                                  {/* 세부 추가 버튼 */}
+                                  <button onClick={e=>{e.stopPropagation();mmAddDet(ch.id);}}
+                                    className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full flex items-center justify-center text-xs font-black text-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
+                                    style={{backgroundColor:color}}>+</button>
+                                </div>
+                              </div>
+                              {/* 세부 노드 */}
+                              {dets.map((d, di) => {
+                                const dp = mmDetPos(d, di, dets.length, chPos, ci, bkChaps.length);
+                                return (
+                                  <div key={d.id}
+                                    style={{ position:'absolute', left:dp.x, top:dp.y, transform:'translate(-50%,-50%)', zIndex:6 }}
+                                    className="group"
+                                    onMouseDown={e => startMmDrag(e, 'd', d.id, dp)}
+                                    onClick={() => { if(!mmMovedRef.current){ setSelectedChapter(ch); setSelectedDetail(d); setViewMode('editor'); } }}>
+                                    <div style={{ border:`2px solid ${color}88`, background:`${color}1a`, cursor: mmDrag?.id===d.id?'grabbing':'grab' }}
+                                      className="rounded-xl px-3 py-2 shadow-md min-w-[90px] text-center relative">
+                                      {mmEditKey===`d-${d.id}` ? (
+                                        <input autoFocus value={mmEditText}
+                                          onChange={e=>setMmEditText(e.target.value)}
+                                          onBlur={mmCommit}
+                                          onKeyDown={e=>{if(e.key==='Enter')mmCommit();if(e.key==='Escape')setMmEditKey(null);}}
+                                          className="bg-transparent outline-none text-xs font-semibold w-full text-center"
+                                          style={{color}} onClick={e=>e.stopPropagation()}/>
+                                      ) : (
+                                        <span className="text-xs font-semibold select-none" style={{color}}
+                                          onDoubleClick={e=>{e.stopPropagation();setMmEditKey(`d-${d.id}`);setMmEditText(d.title);}}>
+                                          {d.title.length>14?d.title.slice(0,13)+'…':d.title}
+                                        </span>
+                                      )}
+                                      <button onClick={e=>{e.stopPropagation();if(window.confirm('삭제하시겠습니까?'))setDetails(p=>p.filter(dd=>dd.id!==d.id));}}
+                                        className="absolute -top-2 -right-2 w-4 h-4 rounded-full bg-red-500 text-white text-[10px] items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity flex">×</button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </motion.div>
-                  ))}
-                  <button onClick={handleAddChapter} className={`w-full p-4 rounded-2xl border-2 border-dashed ${currentTheme.border} text-center opacity-50 hover:opacity-100 font-bold`}>+ 챕터 추가</button>
-                </div>
-                )}
+                      {/* 챕터 추가 버튼 (캔버스 외부) */}
+                      <div className="mt-3 flex justify-center">
+                        <button onClick={mmAddCh} className={`flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold border-2 border-dashed ${currentTheme.border} opacity-60 hover:opacity-100 transition-all`}>
+                          <Plus size={15}/> 챕터 추가
+                        </button>
+                      </div>
+                      <p className="text-center text-xs opacity-40 mt-2">드래그로 이동 · 더블클릭으로 이름 수정 · 챕터의 + 버튼으로 세부 항목 추가 · 세부 항목 클릭으로 내용 편집</p>
+                    </div>
+                  );
+                })()}
+
+                {/* ── 독서록 모드 ── */}
+                {bookMode === 'journal' && (() => {
+                  const j = selectedBook.readingJournal || {};
+                  const upJ = (field, val) => updateBook(selectedBook.id, { readingJournal: { ...j, [field]: val } });
+                  return (
+                    <div className={`rounded-2xl border-2 ${currentTheme.border} overflow-hidden`}>
+                      {/* 헤더 */}
+                      <div className={`${currentTheme.primaryBg} text-white px-8 py-5`}>
+                        <div className="text-xs font-black uppercase tracking-widest opacity-70 mb-1">독서록 · Reading Journal</div>
+                        <div className="text-2xl font-black">{selectedBook.title}</div>
+                        <div className="text-sm opacity-80 mt-0.5">{selectedBook.author && `저자: ${selectedBook.author}`}</div>
+                      </div>
+                      <div className={`${currentTheme.panel} px-8 py-6 space-y-6`}>
+                        {/* 날짜 + 별점 */}
+                        <div className="flex flex-wrap gap-6 items-start">
+                          <div>
+                            <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-1.5">읽은 날짜</div>
+                            <input type="date" value={j.date||''} onChange={e=>upJ('date',e.target.value)}
+                              className={`border ${currentTheme.border} rounded-lg px-3 py-1.5 text-sm bg-transparent outline-none focus:ring-2 focus:ring-blue-400`}/>
+                          </div>
+                          <div>
+                            <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-1.5">별점</div>
+                            <div className="flex gap-1">
+                              {[1,2,3,4,5].map(s => (
+                                <button key={s} onClick={()=>upJ('rating', j.rating===s?0:s)}>
+                                  <Star size={24} className={`transition-colors ${s<=(j.rating||0)?'text-yellow-400 fill-yellow-400':'text-gray-300'}`}/>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-1.5">추천 여부</div>
+                            <div className="flex gap-2">
+                              {[[true,'👍 추천'],[false,'👎 비추천']].map(([v,label])=>(
+                                <button key={String(v)} onClick={()=>upJ('recommend',j.recommend===v?null:v)}
+                                  className={`px-3 py-1 rounded-full text-xs font-bold border transition-all ${j.recommend===v?`${currentTheme.primaryBg} text-white border-transparent`:`${currentTheme.border} opacity-50 hover:opacity-100`}`}>
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        {/* 줄거리 요약 */}
+                        <div>
+                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">📝 줄거리 요약</div>
+                          <textarea value={j.summary||''} onChange={e=>upJ('summary',e.target.value)}
+                            placeholder="책의 주요 내용을 간략히 요약해 보세요..."
+                            className={`w-full min-h-[100px] border ${currentTheme.border} rounded-xl px-4 py-3 text-sm bg-transparent outline-none focus:ring-2 focus:ring-blue-400 resize-none leading-relaxed`}/>
+                        </div>
+                        {/* 인상 깊은 구절 */}
+                        <div>
+                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">💬 인상 깊은 구절</div>
+                          <textarea value={j.quote||''} onChange={e=>upJ('quote',e.target.value)}
+                            placeholder="마음에 남는 문장이나 구절을 적어보세요..."
+                            className={`w-full min-h-[80px] border ${currentTheme.border} rounded-xl px-4 py-3 text-sm bg-transparent outline-none focus:ring-2 focus:ring-blue-400 resize-none leading-relaxed italic`}/>
+                        </div>
+                        {/* 느낀 점 */}
+                        <div>
+                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">💭 느낀 점 / 감상</div>
+                          <textarea value={j.impression||''} onChange={e=>upJ('impression',e.target.value)}
+                            placeholder="책을 읽고 느낀 점, 배운 점, 삶에 어떻게 적용할 것인지 써보세요..."
+                            className={`w-full min-h-[120px] border ${currentTheme.border} rounded-xl px-4 py-3 text-sm bg-transparent outline-none focus:ring-2 focus:ring-blue-400 resize-none leading-relaxed`}/>
+                        </div>
+                        {/* 완독 상태 */}
+                        <div className={`flex items-center gap-3 p-3 rounded-xl ${currentTheme.primaryLight} text-sm`}>
+                          <span className={`font-bold ${currentTheme.primary}`}>진행률:</span>
+                          <div className="flex-1 h-2 rounded-full bg-black/10 overflow-hidden">
+                            <div style={{width:`${calculateProgress(selectedBook.id)}%`}} className={`h-full ${currentTheme.primaryBg}`}/>
+                          </div>
+                          <span className={`font-black ${currentTheme.primary}`}>{calculateProgress(selectedBook.id)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </motion.div>
             )}
             {viewMode === 'details' && selectedChapter && (
               <motion.div key="details" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full h-full flex flex-col">
-                <div className="flex justify-between mb-3">
-                  <button onClick={() => setShowMindMap(!showMindMap)} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full transition-all ${showMindMap ? `${currentTheme.primaryLight} ${currentTheme.primary}` : 'bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100'}`}>
-                    {showMindMap ? <List size={13}/> : <Network size={13}/>}
-                    {showMindMap ? '목록 보기' : '마인드맵'}
-                  </button>
+                <div className="flex justify-end mb-3">
                   <button onClick={() => {setViewMode('chapters'); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
                     <ChevronLeft size={13}/> 뒤로
                   </button>
                 </div>
                 <h2 className="text-3xl font-black mb-4 flex items-center gap-2"><span className={currentTheme.primary}>#{selectedChapter.index}</span> <input value={selectedChapter.title} onChange={e=>{const n=e.target.value;setSelectedChapter({...selectedChapter,title:n});setChapters(chapters.map(c=>c.id===selectedChapter.id?{...c,title:n}:c))}} className="bg-transparent outline-none w-full"/></h2>
-                {showMindMap ? (
-                  <div className={`rounded-2xl border ${currentTheme.border} ${currentTheme.panel} p-4`}>
-                    {renderMindMap(
-                      selectedChapter.title,
-                      details.filter(d => d.chapterId === selectedChapter.id),
-                      (detail) => { setSelectedDetail(detail); setViewMode('editor'); }
-                    )}
-                    <div className="mt-3 text-center">
-                      <button onClick={handleAddDetail} className={`text-xs font-bold px-4 py-1.5 rounded-full border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100`}>+ 세부 노트 추가</button>
-                    </div>
-                  </div>
-                ) : (
                 <div className="space-y-3">
                   {details.filter(d=>d.chapterId===selectedChapter.id).map(detail=>(
                     <div key={detail.id} onClick={()=>{setSelectedDetail(detail);setViewMode('editor')}} className={`p-4 rounded-xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-md cursor-pointer flex justify-between items-center group`}>
                       <span className="font-bold">{detail.title}</span>
                       <div className="flex items-center gap-3">
                         <span className="text-xs opacity-50">{detail.startPage}-{detail.endPage}p</span>
-                        {/* 노트 공개 설정 */}
-                        <button onClick={(e)=>{e.stopPropagation();const v=detail.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setDetails(details.map(d=>d.id===detail.id?{...d,visibility:next[v]}:d));}} title="노트 공개 설정" className={`p-1 rounded-full transition-all ${(detail.visibility&&detail.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
+                        <button onClick={(e)=>{e.stopPropagation();const v=detail.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setDetails(details.map(d=>d.id===detail.id?{...d,visibility:next[v]}:d));}} className={`p-1 rounded-full transition-all ${(detail.visibility&&detail.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
                           {detail.visibility==='private'?<Lock size={12} className="text-red-400"/>:detail.visibility==='friends'?<Users size={12} className="text-blue-400"/>:<Globe size={12} className="text-gray-400"/>}
                         </button>
                         <button onClick={(e) => handleDeleteDetail(e, detail.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={15}/></button>
@@ -1809,7 +2030,6 @@ export default function App() {
                   ))}
                   <button onClick={handleAddDetail} className={`w-full p-4 rounded-xl border-2 border-dashed ${currentTheme.border} opacity-50 hover:opacity-100 font-bold`}>+ 세부 노트 추가</button>
                 </div>
-                )}
               </motion.div>
             )}
             {viewMode === 'editor' && selectedDetail && (
