@@ -177,6 +177,26 @@ export default function App() {
     }
   }, [isAppLoading]);
 
+  // ★ 마인드맵 드래그: 윈도우 레벨 이벤트로 컨테이너 밖에서도 동작
+  useEffect(() => {
+    if (!mmDrag) return;
+    const onMove = (e) => {
+      if (!mmRef.current) return;
+      mmMovedRef.current = true;
+      const rect = mmRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left + mmRef.current.scrollLeft - mmDrag.ox;
+      const y = e.clientY - rect.top + mmRef.current.scrollTop - mmDrag.oy;
+      const cx = Math.max(60, Math.min(MM_W - 60, x));
+      const cy2 = Math.max(30, Math.min(MM_H - 30, y));
+      if (mmDrag.t === 'ch') setChapters(p => p.map(c => c.id === mmDrag.id ? { ...c, mapX: cx, mapY: cy2 } : c));
+      else setDetails(p => p.map(d => d.id === mmDrag.id ? { ...d, mapX: cx, mapY: cy2 } : d));
+    };
+    const onUp = () => setMmDrag(null);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [mmDrag]); // eslint-disable-line
+
   // --- 인증 함수들 ---
 
   const hashPassword = async (pw) => {
@@ -184,7 +204,7 @@ export default function App() {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  const loadUserData = async (userId, displayName) => {
+  const loadUserData = async (userId, displayName, initMeta = null) => {
     try {
       const { data } = await supabase.from('booknote_saves').select('data').eq('id', userId).single();
       if (data?.data) {
@@ -198,7 +218,11 @@ export default function App() {
         setCustomGenres(db[firstLib].customGenres || []);
         localStorage.setItem('booknote_web_final', JSON.stringify(db));
       } else {
-        const newDb = { [displayName]: { books: [], chapters: [], details: [], customGenres: [] } };
+        const libData = { books: [], chapters: [], details: [], customGenres: [] };
+        // initMeta가 있으면 (교육 계정) __meta 포함하여 최초 저장
+        const newDb = initMeta
+          ? { [displayName]: libData, __meta: initMeta }
+          : { [displayName]: libData };
         await supabase.from('booknote_saves').upsert({ id: userId, data: newDb });
         setDatabases(newDb);
         setCurrentLibrary(displayName);
@@ -247,16 +271,11 @@ export default function App() {
       setCurrentUser(user);
       localStorage.setItem('booknote_session', JSON.stringify(user));
       setIsAppLoading(true);
-      await loadUserData(name, name);
-      // 교육 모드: 클래스 코드 저장
-      if (isEduSignup) {
-        const code = authClassCode.trim();
-        const baseDb = { [name]: { books: [], chapters: [], details: [], customGenres: [] } };
-        const updatedDb = { ...baseDb, __meta: { friends: [], mode: 'education', classCode: code, role: authEduRole } };
-        setDatabases(updatedDb);
-        localStorage.setItem('booknote_web_final', JSON.stringify(updatedDb));
-        await supabase.from('booknote_saves').upsert({ id: name, data: updatedDb });
-      }
+      // 교육 모드는 initMeta 포함하여 한 번에 저장 (race condition 방지)
+      const initMeta = isEduSignup
+        ? { friends: [], mode: 'education', classCode: authClassCode.trim(), role: authEduRole }
+        : null;
+      await loadUserData(name, name, initMeta);
     } catch (err) {
       if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
         setAuthError('서버에 연결할 수 없습니다. Supabase 프로젝트가 일시 정지됐거나 Vercel 환경 변수가 없습니다. supabase.com에서 프로젝트 상태를 확인해주세요.');
@@ -284,12 +303,14 @@ export default function App() {
       if (!user) return setAuthError('존재하지 않는 계정입니다.');
       const hash = await hashPassword(authPassword);
       if (user.password_hash !== hash) return setAuthError('비밀번호가 올바르지 않습니다.');
-      // 계정 타입 일치 검증
+      // 계정 타입 일치 검증 (__meta가 실제로 있는 경우에만 검사)
       const { data: saveData } = await supabase.from('booknote_saves').select('data').eq('id', name).maybeSingle();
-      const savedMode = saveData?.data?.__meta?.mode || 'personal';
-      const loginMode = authType === 'education' ? 'education' : 'personal';
-      if (savedMode === 'education' && loginMode !== 'education') return setAuthError('이 계정은 교육 버전 계정입니다. 위에서 [교육] 버튼을 누르고 로그인해주세요.');
-      if (savedMode !== 'education' && loginMode === 'education') return setAuthError('이 계정은 일반 버전 계정입니다. 위에서 [일반] 버튼을 누르고 로그인해주세요.');
+      if (saveData?.data?.__meta?.mode) {
+        const savedMode = saveData.data.__meta.mode;
+        const loginMode = authType === 'education' ? 'education' : 'personal';
+        if (savedMode === 'education' && loginMode !== 'education') return setAuthError('이 계정은 교육 버전 계정입니다. 위에서 [교육] 버튼을 누르고 로그인해주세요.');
+        if (savedMode !== 'education' && loginMode === 'education') return setAuthError('이 계정은 일반 버전 계정입니다. 위에서 [일반] 버튼을 누르고 로그인해주세요.');
+      }
       const session = { id: user.id, displayName: user.display_name };
       setCurrentUser(session);
       localStorage.setItem('booknote_session', JSON.stringify(session));
@@ -627,17 +648,6 @@ export default function App() {
     return { x: chPos.x + 200 * Math.cos(a), y: chPos.y + 200 * Math.sin(a) };
   };
 
-  const handleMmMove = (e) => {
-    if (!mmDrag || !mmRef.current) return;
-    mmMovedRef.current = true;
-    const rect = mmRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left + mmRef.current.scrollLeft - mmDrag.ox;
-    const y = e.clientY - rect.top + mmRef.current.scrollTop - mmDrag.oy;
-    if (mmDrag.t === 'ch') setChapters(p => p.map(c => c.id === mmDrag.id ? { ...c, mapX: Math.max(60, Math.min(MM_W - 60, x)), mapY: Math.max(30, Math.min(MM_H - 30, y)) } : c));
-    else setDetails(p => p.map(d => d.id === mmDrag.id ? { ...d, mapX: Math.max(60, Math.min(MM_W - 60, x)), mapY: Math.max(30, Math.min(MM_H - 30, y)) } : d));
-  };
-
-  const handleMmUp = () => setMmDrag(null);
 
   const startMmDrag = (e, t, id, pos) => {
     e.preventDefault(); e.stopPropagation();
@@ -1797,22 +1807,71 @@ export default function App() {
                   </div>
                 )}
 
-                {/* ── 목록 모드 ── */}
+                {/* ── 문서 모드 (연속 스크롤) ── */}
                 {bookMode === 'list' && (
-                  <div className="space-y-3">
-                    {chapters.filter(c => c.bookId === selectedBook.id).map(chapter => (
-                      <motion.div key={chapter.id} onClick={() => { setSelectedChapter(chapter); setViewMode('details'); }} className={`p-5 rounded-2xl border ${currentTheme.border} ${currentTheme.panel} hover:shadow-lg transition-all cursor-pointer flex items-center justify-between group`}>
-                        <div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-lg flex items-center justify-center font-black ${currentTheme.primaryLight} ${currentTheme.primary}`}>{chapter.index}</div><span className="font-bold text-lg">{chapter.title}</span></div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={(e)=>{e.stopPropagation();const v=chapter.visibility||'show';const next={show:'private',private:'friends',friends:'show'};setChapters(chapters.map(c=>c.id===chapter.id?{...c,visibility:next[v]}:c));}} className={`p-1 rounded-full transition-all ${(chapter.visibility&&chapter.visibility!=='show')?'opacity-100':'opacity-0 group-hover:opacity-60'}`}>
-                            {chapter.visibility==='private'?<Lock size={13} className="text-red-400"/>:chapter.visibility==='friends'?<Users size={13} className="text-blue-400"/>:<Globe size={13} className="text-gray-400"/>}
-                          </button>
-                          <button onClick={(e) => handleDeleteChapter(e, chapter.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={16}/></button>
-                          <ChevronRight size={20} className="opacity-30"/>
+                  <div className="space-y-6">
+                    {chapters.filter(c => c.bookId === selectedBook.id).map((ch, ci) => {
+                      const chDets = details.filter(d => d.chapterId === ch.id);
+                      const chColor = MM_COLORS[ci % MM_COLORS.length];
+                      return (
+                        <div key={ch.id} className={`rounded-2xl border-2 overflow-hidden`} style={{ borderColor: chColor + '55' }}>
+                          {/* 챕터 헤더 */}
+                          <div className="flex items-center gap-3 px-5 py-4 group" style={{ background: chColor + '12' }}>
+                            <div className="w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm text-white shrink-0" style={{ background: chColor }}>{ch.index}</div>
+                            <input
+                              value={ch.title}
+                              onChange={e => setChapters(p => p.map(c => c.id === ch.id ? {...c, title: e.target.value} : c))}
+                              className="flex-1 text-xl font-black bg-transparent outline-none"
+                            />
+                            <button onClick={(e) => handleDeleteChapter(e, ch.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={16}/></button>
+                          </div>
+                          {/* 세부 항목 목록 (내용 포함) */}
+                          <div className={`divide-y ${currentTheme.border}`}>
+                            {chDets.map(d => (
+                              <div key={d.id} className={`${currentTheme.panel} group`}>
+                                <div className="flex items-center gap-2 px-5 pt-4 pb-1">
+                                  <div className="w-1.5 h-5 rounded-full shrink-0" style={{ background: chColor }}/>
+                                  <input
+                                    value={d.title}
+                                    onChange={e => setDetails(p => p.map(dd => dd.id === d.id ? {...dd, title: e.target.value} : dd))}
+                                    className="flex-1 font-bold text-base bg-transparent outline-none"
+                                  />
+                                  <span className="text-xs opacity-40 shrink-0">{d.startPage}-{d.endPage}p</span>
+                                  <button onClick={e => handleDeleteDetail(e, d.id)} className="opacity-0 group-hover:opacity-60 text-gray-400 hover:text-red-500 transition-opacity p-1 shrink-0"><Trash2 size={14}/></button>
+                                </div>
+                                <textarea
+                                  value={d.content || ''}
+                                  onChange={e => setDetails(p => p.map(dd => dd.id === d.id ? {...dd, content: e.target.value} : dd))}
+                                  placeholder="내용을 입력하세요..."
+                                  rows={Math.max(2, Math.ceil((d.content || '').length / 60) + 1)}
+                                  className={`w-full px-5 pb-4 pt-1 bg-transparent outline-none resize-none text-sm leading-relaxed opacity-80 placeholder-gray-400`}
+                                />
+                                {d.teacherFeedback && (
+                                  <div className="mx-5 mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-sm">
+                                    <span className="font-bold text-emerald-700">선생님 피드백</span>
+                                    <span className="ml-2 text-emerald-600 text-xs bg-emerald-100 px-1.5 py-0.5 rounded-full">{d.teacherFeedback.score}점</span>
+                                    <p className="text-emerald-700 mt-1 text-xs">{d.teacherFeedback.text}</p>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            <div className={`${currentTheme.panel} px-5 py-3`}>
+                              <button
+                                onClick={() => {
+                                  const n = chDets.length + 1;
+                                  setDetails(p => [...p, { id: Date.now(), chapterId: ch.id, index: n.toString(), title: `세부 항목 ${n}`, startPage: 1, endPage: 10, content: '', videoUrl: '' }]);
+                                }}
+                                className="text-xs font-bold opacity-40 hover:opacity-100 transition-opacity flex items-center gap-1">
+                                <Plus size={13}/> 세부 항목 추가
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                      </motion.div>
-                    ))}
-                    <button onClick={handleAddChapter} className={`w-full p-4 rounded-2xl border-2 border-dashed ${currentTheme.border} text-center opacity-50 hover:opacity-100 font-bold`}>+ 챕터 추가</button>
+                      );
+                    })}
+                    <button onClick={handleAddChapter} className={`w-full p-4 rounded-2xl border-2 border-dashed ${currentTheme.border} text-center opacity-50 hover:opacity-100 font-bold flex items-center justify-center gap-2`}>
+                      <Plus size={16}/> 챕터 추가
+                    </button>
                   </div>
                 )}
 
@@ -1836,23 +1895,39 @@ export default function App() {
                       <div ref={mmRef}
                         className={`rounded-2xl border ${currentTheme.border} overflow-auto`}
                         style={{ height:'calc(100vh - 430px)', minHeight:'480px', cursor: mmDrag?'grabbing':'default', userSelect:'none', background: theme==='dark'?'#0f172a': theme==='sepia'?'#fdf8f0':'#f8fafc' }}
-                        onMouseMove={handleMmMove} onMouseUp={handleMmUp} onMouseLeave={handleMmUp}>
+>
                         <div style={{ width:MM_W, height:MM_H, position:'relative' }}>
                           {/* SVG 연결선 */}
                           <svg style={{ position:'absolute', inset:0, width:'100%', height:'100%', pointerEvents:'none' }}>
+                            <defs>
+                              {MM_COLORS.map((c,i) => (
+                                <filter key={i} id={`glow-${i}`}>
+                                  <feGaussianBlur stdDeviation="2" result="blur"/>
+                                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                                </filter>
+                              ))}
+                            </defs>
                             {edges.map((e, i) => {
-                              const mx = (e.fx + e.tx) / 2;
+                              const dx = e.tx - e.fx, dy = e.ty - e.fy;
+                              // 유기적 S-곡선: 수직/수평에 따라 다른 느낌
+                              const cp1x = e.fx + dx * 0.45 + dy * 0.05;
+                              const cp1y = e.fy + dy * 0.05 - dx * 0.05;
+                              const cp2x = e.tx - dx * 0.45 + dy * 0.05;
+                              const cp2y = e.ty - dy * 0.05 - dx * 0.05;
                               return (
                                 <path key={i}
-                                  d={`M ${e.fx} ${e.fy} C ${mx} ${e.fy} ${mx} ${e.ty} ${e.tx} ${e.ty}`}
-                                  stroke={e.color} strokeWidth={e.w} fill="none" strokeLinecap="round" opacity={0.7}/>
+                                  d={`M ${e.fx} ${e.fy} C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${e.tx} ${e.ty}`}
+                                  stroke={e.color} strokeWidth={e.w} fill="none" strokeLinecap="round"
+                                  opacity={e.w > 4 ? 0.85 : 0.65}/>
                               );
                             })}
                           </svg>
                           {/* 책 루트 노드 */}
-                          <div style={{ position:'absolute', left:MM_CX, top:MM_CY, transform:'translate(-50%,-50%)', zIndex:10 }}
-                            className={`w-40 h-14 flex items-center justify-center rounded-full ${currentTheme.primaryBg} text-white font-black text-sm text-center shadow-2xl px-3`}>
-                            {(selectedBook.title||'').length > 16 ? selectedBook.title.slice(0,15)+'…' : selectedBook.title}
+                          <div style={{ position:'absolute', left:MM_CX, top:MM_CY, transform:'translate(-50%,-50%)', zIndex:10 }}>
+                            <div className={`${currentTheme.primaryBg} text-white font-black text-base text-center shadow-2xl px-6 py-3 rounded-3xl`}
+                              style={{ minWidth:'140px', maxWidth:'180px', lineHeight:'1.3', boxShadow:`0 8px 32px ${theme==='dark'?'#0008':'#0002'}` }}>
+                              {(selectedBook.title||'').length > 14 ? selectedBook.title.slice(0,13)+'…' : selectedBook.title}
+                            </div>
                           </div>
                           {/* 챕터 + 세부 노드 */}
                           {chNodes.map(({ ch, chPos, color, ci, dets }) => (
@@ -1861,17 +1936,17 @@ export default function App() {
                               <div style={{ position:'absolute', left:chPos.x, top:chPos.y, transform:'translate(-50%,-50%)', zIndex:8 }}
                                 className="group"
                                 onMouseDown={e => startMmDrag(e, 'ch', ch.id, chPos)}>
-                                <div style={{ border:`3px solid ${color}`, background: theme==='dark'?'#1e293b':'#fff', cursor: mmDrag?.id===ch.id?'grabbing':'grab' }}
-                                  className="rounded-2xl px-4 py-2.5 shadow-lg min-w-[120px] text-center relative">
+                                <div style={{ background: color, cursor: mmDrag?.id===ch.id?'grabbing':'grab', boxShadow:`0 4px 20px ${color}55` }}
+                                  className="rounded-2xl px-5 py-3 shadow-xl min-w-[120px] text-center relative">
                                   {mmEditKey===`ch-${ch.id}` ? (
                                     <input autoFocus value={mmEditText}
                                       onChange={e=>setMmEditText(e.target.value)}
                                       onBlur={mmCommit}
                                       onKeyDown={e=>{if(e.key==='Enter')mmCommit();if(e.key==='Escape')setMmEditKey(null);}}
-                                      className="bg-transparent outline-none text-sm font-bold w-full text-center"
-                                      style={{color}} onClick={e=>e.stopPropagation()}/>
+                                      className="bg-transparent outline-none text-sm font-bold w-full text-center text-white"
+                                      onClick={e=>e.stopPropagation()}/>
                                   ) : (
-                                    <span className="text-sm font-bold select-none" style={{color}}
+                                    <span className="text-sm font-bold select-none text-white"
                                       onDoubleClick={e=>{e.stopPropagation();setMmEditKey(`ch-${ch.id}`);setMmEditText(ch.title);}}>
                                       {ch.title.length>15?ch.title.slice(0,14)+'…':ch.title}
                                     </span>
@@ -1894,8 +1969,8 @@ export default function App() {
                                     className="group"
                                     onMouseDown={e => startMmDrag(e, 'd', d.id, dp)}
                                     onClick={() => { if(!mmMovedRef.current){ setSelectedChapter(ch); setSelectedDetail(d); setViewMode('editor'); } }}>
-                                    <div style={{ border:`2px solid ${color}88`, background:`${color}1a`, cursor: mmDrag?.id===d.id?'grabbing':'grab' }}
-                                      className="rounded-xl px-3 py-2 shadow-md min-w-[90px] text-center relative">
+                                    <div style={{ border:`2.5px solid ${color}`, background:`${color}22`, cursor: mmDrag?.id===d.id?'grabbing':'grab', backdropFilter:'blur(4px)' }}
+                                      className="rounded-2xl px-3 py-2 shadow-lg min-w-[90px] text-center relative hover:shadow-xl transition-shadow">
                                       {mmEditKey===`d-${d.id}` ? (
                                         <input autoFocus value={mmEditText}
                                           onChange={e=>setMmEditText(e.target.value)}
