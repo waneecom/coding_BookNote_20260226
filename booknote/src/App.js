@@ -630,13 +630,13 @@ export default function App() {
   };
 
   // ─── 마인드맵 에디터 헬퍼 ───────────────────────────────
-  const MM_W = 1900, MM_H = 1060, MM_CX = 950, MM_CY = 530;
+  const MM_W = 1300, MM_H = 740, MM_CX = 650, MM_CY = 370;
   const MM_COLORS = ['#e06a3a','#3d8fc7','#45a872','#8b63c4','#c9953a','#31a8a8','#c94f7a','#7aaa42'];
 
   const mmChPos = (ch, i, n) => {
     if (ch.mapX != null) return { x: ch.mapX, y: ch.mapY };
     const a = n === 1 ? -Math.PI / 2 : (i / n) * 2 * Math.PI - Math.PI / 2;
-    const r = 280 + (i % 3) * 30;
+    const r = 195 + (i % 3) * 20;
     return { x: MM_CX + r * Math.cos(a), y: MM_CY + r * Math.sin(a) };
   };
 
@@ -645,7 +645,7 @@ export default function App() {
     const baseA = cn === 1 ? -Math.PI / 2 : (ci / cn) * 2 * Math.PI - Math.PI / 2;
     const spread = dn <= 1 ? 0 : (di - (dn - 1) / 2) * 0.68;
     const a = baseA + spread;
-    return { x: chPos.x + 200 * Math.cos(a), y: chPos.y + 200 * Math.sin(a) };
+    return { x: chPos.x + 155 * Math.cos(a), y: chPos.y + 155 * Math.sin(a) };
   };
 
 
@@ -1815,34 +1815,46 @@ export default function App() {
                       const chColor = MM_COLORS[ci % MM_COLORS.length];
                       return (
                         <div key={ch.id} className={`rounded-2xl border-2 overflow-hidden`} style={{ borderColor: chColor + '55' }}>
-                          {/* 챕터 헤더 */}
-                          <div className="flex items-center gap-3 px-5 py-4 group" style={{ background: chColor + '12' }}>
+                          {/* 챕터 헤더 — 클릭 시 챕터 세부 화면으로 이동 */}
+                          <div
+                            className="flex items-center gap-3 px-5 py-4 group cursor-pointer hover:opacity-90 transition-opacity"
+                            style={{ background: chColor + '18' }}
+                            onClick={() => { setSelectedChapter(ch); setViewMode('details'); }}>
                             <div className="w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm text-white shrink-0" style={{ background: chColor }}>{ch.index}</div>
                             <input
                               value={ch.title}
-                              onChange={e => setChapters(p => p.map(c => c.id === ch.id ? {...c, title: e.target.value} : c))}
-                              className="flex-1 text-xl font-black bg-transparent outline-none"
+                              onChange={e => { e.stopPropagation(); setChapters(p => p.map(c => c.id === ch.id ? {...c, title: e.target.value} : c)); }}
+                              onClick={e => e.stopPropagation()}
+                              className="flex-1 text-xl font-black bg-transparent outline-none cursor-text"
                             />
-                            <button onClick={(e) => handleDeleteChapter(e, ch.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1"><Trash2 size={16}/></button>
+                            <ChevronRight size={16} className="opacity-30 shrink-0"/>
+                            <button onClick={(e) => handleDeleteChapter(e, ch.id)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity p-1 shrink-0"><Trash2 size={16}/></button>
                           </div>
                           {/* 세부 항목 목록 (내용 포함) */}
                           <div className={`divide-y ${currentTheme.border}`}>
                             {chDets.map(d => (
                               <div key={d.id} className={`${currentTheme.panel} group`}>
-                                <div className="flex items-center gap-2 px-5 pt-4 pb-1">
+                                {/* 세부 항목 제목 행 — 클릭 시 에디터로 이동 */}
+                                <div
+                                  className="flex items-center gap-2 px-5 pt-4 pb-1 cursor-pointer hover:opacity-80 transition-opacity"
+                                  onClick={() => { setSelectedChapter(ch); setSelectedDetail(d); setViewMode('editor'); }}>
                                   <div className="w-1.5 h-5 rounded-full shrink-0" style={{ background: chColor }}/>
                                   <input
                                     value={d.title}
-                                    onChange={e => setDetails(p => p.map(dd => dd.id === d.id ? {...dd, title: e.target.value} : dd))}
-                                    className="flex-1 font-bold text-base bg-transparent outline-none"
+                                    onChange={e => { e.stopPropagation(); setDetails(p => p.map(dd => dd.id === d.id ? {...dd, title: e.target.value} : dd)); }}
+                                    onClick={e => e.stopPropagation()}
+                                    className="flex-1 font-bold text-base bg-transparent outline-none cursor-text"
                                   />
                                   <span className="text-xs opacity-40 shrink-0">{d.startPage}-{d.endPage}p</span>
+                                  <ChevronRight size={13} className="opacity-20 shrink-0"/>
                                   <button onClick={e => handleDeleteDetail(e, d.id)} className="opacity-0 group-hover:opacity-60 text-gray-400 hover:text-red-500 transition-opacity p-1 shrink-0"><Trash2 size={14}/></button>
                                 </div>
+                                {/* 내용 — 클릭해도 에디터로 이동하지 않음 (인라인 편집) */}
                                 <textarea
                                   value={d.content || ''}
                                   onChange={e => setDetails(p => p.map(dd => dd.id === d.id ? {...dd, content: e.target.value} : dd))}
-                                  placeholder="내용을 입력하세요..."
+                                  onClick={e => e.stopPropagation()}
+                                  placeholder="내용을 입력하세요... (클릭하면 바로 작성 가능)"
                                   rows={Math.max(2, Math.ceil((d.content || '').length / 60) + 1)}
                                   className={`w-full px-5 pb-4 pt-1 bg-transparent outline-none resize-none text-sm leading-relaxed opacity-80 placeholder-gray-400`}
                                 />
@@ -1894,7 +1906,7 @@ export default function App() {
                     <div className="relative">
                       <div ref={mmRef}
                         className={`rounded-2xl border ${currentTheme.border} overflow-auto`}
-                        style={{ height:'calc(100vh - 430px)', minHeight:'480px', cursor: mmDrag?'grabbing':'default', userSelect:'none', background: theme==='dark'?'#0f172a': theme==='sepia'?'#fdf8f0':'#f8fafc' }}
+                        style={{ height: Math.min(MM_H, window.innerHeight - 400) + 'px', minHeight:'360px', maxHeight: MM_H + 'px', cursor: mmDrag?'grabbing':'default', userSelect:'none', background: theme==='dark'?'#0f172a': theme==='sepia'?'#fdf8f0':'#f8fafc' }}
 >
                         <div style={{ width:MM_W, height:MM_H, position:'relative' }}>
                           {/* SVG 연결선 */}
