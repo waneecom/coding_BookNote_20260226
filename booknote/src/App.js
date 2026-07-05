@@ -5,7 +5,7 @@ import {
   Plus, Moon, Sun, BookOpen, Lock, Globe,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2,
-  UserPlus, UserCheck, GraduationCap, Star
+  UserPlus, UserCheck, GraduationCap, Star, Eye, EyeOff
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase';
 
@@ -63,6 +63,8 @@ export default function App() {
   const [authName, setAuthName] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authConfirmPw, setAuthConfirmPw] = useState('');
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
+  const [showAuthConfirmPw, setShowAuthConfirmPw] = useState(false);
   const [authError, setAuthError] = useState('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authType, setAuthType] = useState('personal'); // 'personal' | 'education'
@@ -339,6 +341,7 @@ export default function App() {
     setBooks([]); setChapters([]); setDetails([]); setCustomGenres([]);
     setSelectedBook(null); setViewMode('shelf');
     setAuthName(''); setAuthPassword(''); setAuthConfirmPw(''); setAuthError('');
+    setShowAuthPassword(false); setShowAuthConfirmPw(false);
     setAuthMode('login');
   };
 
@@ -1023,26 +1026,48 @@ export default function App() {
             </div>
             <div>
               <label className="text-xs font-bold opacity-60 mb-1 block">비밀번호</label>
-              <input
-                type="password"
-                value={authPassword}
-                onChange={e => { setAuthPassword(e.target.value); setAuthError(''); }}
-                onKeyDown={e => e.key === 'Enter' && (isSignup ? handleSignup() : handleLogin())}
-                placeholder="비밀번호 (8자 이상, 문자+숫자 필수)"
-                className={`w-full p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
-              />
+              <div className="relative">
+                <input
+                  type={showAuthPassword ? 'text' : 'password'}
+                  value={authPassword}
+                  onChange={e => { setAuthPassword(e.target.value); setAuthError(''); }}
+                  onKeyDown={e => e.key === 'Enter' && (isSignup ? handleSignup() : handleLogin())}
+                  placeholder="비밀번호 (8자 이상, 문자+숫자 필수)"
+                  className={`w-full p-3 pr-10 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowAuthPassword(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-100"
+                  aria-label={showAuthPassword ? '비밀번호 숨기기' : '비밀번호 표시'}
+                >
+                  {showAuthPassword ? <EyeOff size={16}/> : <Eye size={16}/>}
+                </button>
+              </div>
             </div>
             {isSignup && (
               <div>
                 <label className="text-xs font-bold opacity-60 mb-1 block">비밀번호 확인</label>
-                <input
-                  type="password"
-                  value={authConfirmPw}
-                  onChange={e => { setAuthConfirmPw(e.target.value); setAuthError(''); }}
-                  onKeyDown={e => e.key === 'Enter' && handleSignup()}
-                  placeholder="비밀번호를 다시 입력하세요"
-                  className={`w-full p-3 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
-                />
+                <div className="relative">
+                  <input
+                    type={showAuthConfirmPw ? 'text' : 'password'}
+                    value={authConfirmPw}
+                    onChange={e => { setAuthConfirmPw(e.target.value); setAuthError(''); }}
+                    onKeyDown={e => e.key === 'Enter' && handleSignup()}
+                    placeholder="비밀번호를 다시 입력하세요"
+                    className={`w-full p-3 pr-10 rounded-xl border-2 ${currentTheme.border} bg-transparent outline-none focus:border-blue-400 text-sm`}
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => setShowAuthConfirmPw(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-100"
+                    aria-label={showAuthConfirmPw ? '비밀번호 숨기기' : '비밀번호 표시'}
+                  >
+                    {showAuthConfirmPw ? <EyeOff size={16}/> : <Eye size={16}/>}
+                  </button>
+                </div>
               </div>
             )}
             {isSignup && isEdu && (
