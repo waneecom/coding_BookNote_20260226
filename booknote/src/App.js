@@ -5,7 +5,8 @@ import {
   Plus, Moon, Sun, BookOpen, Lock, Globe,
   Layout, PanelRightClose, PanelRightOpen, Check, Edit3,
   Users, Save, ExternalLink, ArrowDown, Award, Sparkles, Trash2,
-  UserPlus, UserCheck, GraduationCap, Star, Eye, EyeOff
+  UserPlus, UserCheck, GraduationCap, Star, Eye, EyeOff,
+  ImagePlus, X, Share2
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase';
 import './App.css';
@@ -50,6 +51,37 @@ const isMobileViewport = () =>
 
 const getInitialSidebarTab = () => (isMobileViewport() ? null : 'search');
 
+const readImageFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = reject;
+  reader.readAsDataURL(file);
+});
+
+const sanitizeFileName = (name) =>
+  (name || 'booknote').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_').slice(0, 60);
+
+const drawWrappedText = (ctx, text, x, y, maxWidth, lineHeight, maxLines = 4) => {
+  const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ');
+  const lines = [];
+  let line = '';
+
+  for (const word of words) {
+    const testLine = line ? `${line} ${word}` : word;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+      if (lines.length === maxLines) break;
+    } else {
+      line = testLine;
+    }
+  }
+
+  if (line && lines.length < maxLines) lines.push(line);
+  lines.forEach((lineText, index) => ctx.fillText(lineText, x, y + index * lineHeight));
+  return y + lines.length * lineHeight;
+};
+
 export default function App() {
   // --- 상태 관리 ---
   const [isAppLoading, setIsAppLoading] = useState(true);
@@ -66,6 +98,7 @@ export default function App() {
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [sidebarTab, setSidebarTab] = useState(getInitialSidebarTab);
+  const [mobileNavSection, setMobileNavSection] = useState('main');
   const [contextMenu, setContextMenu] = useState(null);
   const [editingBookId, setEditingBookId] = useState(null);
 
@@ -700,7 +733,7 @@ export default function App() {
 
       if (!isCurrentSpellRun()) return count > 0;
       if (count > 0) {
-        setSpellMessage(`✨ ${sourceLabel}: ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+        setSpellMessage(`${sourceLabel}: ${count}개 오류 발견. 아래에서 확인 후 적용하세요.`);
         setSpellCorrection(correctedText);
         setSpellErrors(rules.flatMap(([pattern, replacement]) => {
           const matches = text.match(pattern) || [];
@@ -711,7 +744,7 @@ export default function App() {
           }));
         }));
       } else {
-        setSpellMessage('⚠️ 오타를 찾지 못했습니다. 서버 맞춤법 API가 연결되지 않은 경우, 현재는 내장 교정 사전으로만 검사합니다.');
+        setSpellMessage('오타를 찾지 못했습니다. 서버 맞춤법 API가 연결되지 않은 경우, 현재는 내장 교정 사전으로만 검사합니다.');
       }
       return count > 0;
     };
@@ -733,11 +766,11 @@ export default function App() {
 
       if (!isCurrentSpellRun()) return;
       if (result.changed) {
-        setSpellMessage(`✨ 서버 맞춤법 검사: ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+        setSpellMessage(`서버 맞춤법 검사: ${result.errorCount}개 오류 발견. 아래에서 확인 후 적용하세요.`);
         setSpellCorrection(result.corrected);
         setSpellErrors(Array.isArray(result.errors) ? result.errors : []);
       } else if (!runLocalSpellCheck('기본 교정')) {
-        setSpellMessage('✅ 맞춤법 검사 완료: 오류가 없습니다!');
+        setSpellMessage('맞춤법 검사 완료: 오류가 없습니다.');
       }
     } catch {
       // API 실패 → 로컬 패턴으로 폴백 (로컬 npm start 환경 포함)
@@ -752,7 +785,7 @@ export default function App() {
     const newObj = { ...selectedDetail, content: spellCorrection };
     setDetails(details.map(d => d.id === newObj.id ? newObj : d));
     setSelectedDetail(newObj);
-    setSpellMessage('✅ 적용 완료!');
+    setSpellMessage('적용 완료.');
     setSpellErrors([]);
     setTimeout(() => setSpellMessage(''), 3000);
   };
@@ -790,7 +823,146 @@ export default function App() {
 
   const handleContextMenu = (e, book) => { e.preventDefault(); setContextMenu({ x: e.pageX, y: e.pageY, book }); };
   const updateBook = (id, updates) => { setBooks(books.map(b => b.id === id ? { ...b, ...updates } : b)); if (selectedBook?.id === id) setSelectedBook({ ...selectedBook, ...updates }); };
+  const updateDetail = (id, updates) => {
+    setDetails(prev => prev.map(d => d.id === id ? { ...d, ...updates } : d));
+    if (selectedDetail?.id === id) setSelectedDetail(prev => prev ? { ...prev, ...updates } : prev);
+  };
   const handleAddBook = () => { setShowBookSearch(true); setBookSearchQuery(''); setBookSearchResults([]); setBookSearchError(''); };
+
+  const handleAttachDetailPhotos = async (fileList) => {
+    if (!selectedDetail || !fileList?.length) return;
+
+    const files = Array.from(fileList).filter(file => file.type.startsWith('image/')).slice(0, 6);
+    if (files.length === 0) return;
+
+    const newPhotos = await Promise.all(files.map(async (file) => ({
+      id: `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2)}`,
+      name: file.name,
+      url: await readImageFileAsDataUrl(file)
+    })));
+    const photos = [...(selectedDetail.photos || []), ...newPhotos].slice(0, 12);
+    updateDetail(selectedDetail.id, { photos });
+  };
+
+  const handleRemoveDetailPhoto = (photoId) => {
+    if (!selectedDetail) return;
+    updateDetail(selectedDetail.id, {
+      photos: (selectedDetail.photos || []).filter(photo => photo.id !== photoId)
+    });
+  };
+
+  const handleShareBookRecord = async () => {
+    if (!selectedBook) return;
+
+    const bookChapters = chapters.filter(c => c.bookId === selectedBook.id);
+    const bookChapterIds = bookChapters.map(c => c.id);
+    const bookDetails = details.filter(d => bookChapterIds.includes(d.chapterId));
+    const writtenDetails = bookDetails.filter(d => (d.content || '').trim().length > 0);
+    const recentNotes = writtenDetails.slice(-4).reverse();
+    const progress = calculateProgress(selectedBook.id);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 1200;
+    canvas.height = 1600;
+    const ctx = canvas.getContext('2d');
+    const palette = theme === 'dark'
+      ? { bg: '#111827', panel: '#1f2937', text: '#f9fafb', sub: '#9ca3af', accent: '#60a5fa', soft: '#273449' }
+      : theme === 'light'
+      ? { bg: '#f8fafc', panel: '#ffffff', text: '#111827', sub: '#64748b', accent: '#2563eb', soft: '#e0ecff' }
+      : { bg: '#f5eddc', panel: '#fff9ed', text: '#3f342b', sub: '#8c7a66', accent: '#d35400', soft: '#f3dfbd' };
+
+    ctx.fillStyle = palette.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = palette.panel;
+    ctx.beginPath();
+    ctx.roundRect(80, 80, 1040, 1440, 34);
+    ctx.fill();
+
+    ctx.fillStyle = palette.accent;
+    ctx.font = '700 32px Arial, sans-serif';
+    ctx.fillText('BookNote', 130, 155);
+    ctx.fillStyle = palette.sub;
+    ctx.font = '500 22px Arial, sans-serif';
+    ctx.fillText('책 기록 공유', 130, 195);
+
+    ctx.fillStyle = palette.text;
+    ctx.font = '800 54px Arial, sans-serif';
+    drawWrappedText(ctx, selectedBook.title || '제목 없음', 130, 305, 720, 66, 3);
+
+    ctx.fillStyle = palette.sub;
+    ctx.font = '500 26px Arial, sans-serif';
+    ctx.fillText(selectedBook.author ? `저자 ${selectedBook.author}` : '저자 미상', 130, 510);
+
+    ctx.fillStyle = palette.soft;
+    ctx.beginPath();
+    ctx.roundRect(130, 590, 940, 34, 17);
+    ctx.fill();
+    ctx.fillStyle = palette.accent;
+    ctx.beginPath();
+    ctx.roundRect(130, 590, Math.max(24, 940 * progress / 100), 34, 17);
+    ctx.fill();
+    ctx.fillStyle = palette.text;
+    ctx.font = '800 34px Arial, sans-serif';
+    ctx.fillText(`${progress}% 읽음`, 130, 685);
+
+    const stats = [
+      ['챕터', `${bookChapters.length}개`],
+      ['노트', `${writtenDetails.length}개`],
+      ['총 페이지', `${selectedBook.totalPages || 0}쪽`]
+    ];
+    stats.forEach(([label, value], index) => {
+      const x = 130 + index * 315;
+      ctx.fillStyle = palette.soft;
+      ctx.beginPath();
+      ctx.roundRect(x, 735, 280, 130, 22);
+      ctx.fill();
+      ctx.fillStyle = palette.sub;
+      ctx.font = '600 22px Arial, sans-serif';
+      ctx.fillText(label, x + 28, 785);
+      ctx.fillStyle = palette.text;
+      ctx.font = '800 36px Arial, sans-serif';
+      ctx.fillText(value, x + 28, 835);
+    });
+
+    ctx.fillStyle = palette.text;
+    ctx.font = '800 32px Arial, sans-serif';
+    ctx.fillText('최근 기록', 130, 970);
+    ctx.font = '500 26px Arial, sans-serif';
+    let noteY = 1030;
+    if (recentNotes.length === 0) {
+      ctx.fillStyle = palette.sub;
+      ctx.fillText('아직 작성된 노트가 없습니다.', 130, noteY);
+    } else {
+      recentNotes.forEach((note, index) => {
+        ctx.fillStyle = palette.accent;
+        ctx.font = '800 25px Arial, sans-serif';
+        ctx.fillText(`${index + 1}. ${note.title || '노트'}`, 130, noteY);
+        ctx.fillStyle = palette.sub;
+        ctx.font = '500 23px Arial, sans-serif';
+        noteY = drawWrappedText(ctx, note.content || '', 160, noteY + 42, 870, 34, 2) + 36;
+      });
+    }
+
+    ctx.fillStyle = palette.sub;
+    ctx.font = '500 20px Arial, sans-serif';
+    ctx.fillText(`생성일 ${new Date().toLocaleDateString('ko-KR')} · BookNote`, 130, 1450);
+
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+      const fileName = `${sanitizeFileName(selectedBook.title)}_BookNote.png`;
+      const file = new File([blob], fileName, { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: selectedBook.title, text: 'BookNote 책 기록' });
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+    }, 'image/png', 0.95);
+  };
 
   const handleSearchBook = async (query) => {
     if (!query.trim()) return;
@@ -1236,7 +1408,7 @@ export default function App() {
               : <BookOpen size={48} className={`mx-auto mb-3 ${currentTheme.primary}`} />
             }
             <h1 className="text-2xl font-black">BookNote</h1>
-            <p className="text-xs opacity-40 mt-1">{isEdu ? '🎓 교육 버전' : '☁️ 나만의 클라우드 서재'}</p>
+            <p className="text-xs opacity-40 mt-1">{isEdu ? '교육 버전' : '나만의 클라우드 서재'}</p>
           </div>
           {/* 버전 선택 */}
           <div className={`flex rounded-xl overflow-hidden border-2 mb-3 ${currentTheme.border}`}>
@@ -1252,7 +1424,7 @@ export default function App() {
 
           {!isSupabaseConfigured && (
             <div className="mb-4 text-xs text-amber-800 bg-amber-100 border border-amber-300 rounded-xl px-3 py-2.5 leading-relaxed">
-              ⚠️ <strong>서버 연결 오류</strong><br/>
+              <strong>서버 연결 오류</strong><br/>
               Vercel 환경 변수가 설정되지 않았습니다.<br/>
               Vercel → Project Settings → Environment Variables에서<br/>
               <code className="bg-amber-200 px-1 rounded">REACT_APP_SUPABASE_URL</code>,{' '}
@@ -1350,7 +1522,7 @@ export default function App() {
             disabled={isAuthLoading}
             className={`w-full mt-5 py-3 rounded-xl ${isEdu ? 'bg-emerald-600 hover:bg-emerald-700' : currentTheme.primaryBg} text-white font-bold shadow transition-colors disabled:opacity-50`}
           >
-            {isAuthLoading ? '처리 중...' : isSignup ? (isEdu ? (authEduRole==='teacher'?'🏫 교사 계정 만들기':'🎓 학생 계정 만들기') : '회원가입') : (isEdu ? '🎓 교육 버전 로그인' : '로그인')}
+            {isAuthLoading ? '처리 중...' : isSignup ? (isEdu ? (authEduRole==='teacher'?'교사 계정 만들기':'학생 계정 만들기') : '회원가입') : (isEdu ? '교육 버전 로그인' : '로그인')}
           </button>
         </motion.div>
       </div>
@@ -1359,7 +1531,7 @@ export default function App() {
 
   // --- Left Sidebar ---
   const renderLeftNav = () => (
-    <aside className={`booknote-left-nav w-64 border-r ${currentTheme.border} ${currentTheme.panel} flex flex-col z-20 shadow-sm shrink-0 h-full`}>
+    <aside className={`booknote-left-nav ${mobileNavSection === 'books' ? 'booknote-mobile-books-open' : ''} w-64 border-r ${currentTheme.border} ${currentTheme.panel} flex flex-col z-20 shadow-sm shrink-0 h-full`}>
       <div className={`p-5 border-b ${currentTheme.border} flex flex-col gap-4`}>
         <div className="flex justify-between items-center">
           <h1 className={`text-xl font-black tracking-tighter flex items-center gap-2 ${currentTheme.primary}`}><BookOpen size={24} /> BookNote</h1>
@@ -1372,7 +1544,7 @@ export default function App() {
               : 'bg-black/5 opacity-40'}`}>
               {isSaved === true ? <><Check size={13}/> 저장됨</>
               : isSaved === 'saving' ? <><Save size={13} className="animate-pulse"/> 저장 중...</>
-              : isSaved === 'error' ? <>⚠ 저장 실패</>
+              : isSaved === 'error' ? <>저장 실패</>
               : <><Save size={13}/> 자동저장</>}
             </div>
             {/* 로그아웃 버튼 */}
@@ -1380,6 +1552,36 @@ export default function App() {
               나가기
             </button>
           </div>
+        </div>
+        <div className="booknote-mobile-nav-switch">
+          <button
+            onClick={() => {
+              setMobileNavSection('main');
+              setSidebarTab(null);
+              setViewMode('shelf');
+            }}
+            className={mobileNavSection === 'main' && !sidebarTab ? 'is-active' : ''}
+          >
+            책장
+          </button>
+          <button
+            onClick={() => {
+              setMobileNavSection(prev => prev === 'books' ? 'main' : 'books');
+              setSidebarTab(null);
+            }}
+            className={mobileNavSection === 'books' ? 'is-active' : ''}
+          >
+            책 목록
+          </button>
+          <button
+            onClick={() => {
+              setMobileNavSection('tools');
+              setSidebarTab(sidebarTab || 'search');
+            }}
+            className={sidebarTab ? 'is-active' : ''}
+          >
+            도구
+          </button>
         </div>
         <div className={`rounded-2xl overflow-hidden border ${currentTheme.border} shadow-sm`}>
           <div className="px-3 pt-2.5 pb-2 flex justify-between items-center" style={{background: theme==='sepia'?'rgba(211,84,0,0.07)':theme==='dark'?'rgba(96,165,250,0.12)':'rgba(37,99,235,0.06)'}}>
@@ -1570,8 +1772,8 @@ export default function App() {
                       </div>
                       <div className="flex justify-center my-1">
                         <button onClick={handleRunSpellCheck} disabled={isCheckingSpelling || !selectedDetail.content} className="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 px-4 py-2 rounded-full text-xs font-bold transition-all disabled:opacity-50 shadow-sm">
-                          {isCheckingSpelling ? <span className="animate-spin">⏳</span> : <Sparkles size={14}/>}
-                          {isCheckingSpelling ? 'AI 분석 및 교정 중...' : '✨ 자동 맞춤법 검사 실행'}
+                          <Sparkles size={14} className={isCheckingSpelling ? 'animate-spin' : ''}/>
+                          {isCheckingSpelling ? 'AI 분석 및 교정 중...' : '자동 맞춤법 검사 실행'}
                         </button>
                       </div>
                       <div className="flex justify-center opacity-30"><ArrowDown size={20}/></div>
@@ -1842,7 +2044,7 @@ export default function App() {
                         </div>
                         {/* 탭 바 */}
                         <div className={`flex gap-1 p-1 rounded-2xl mb-6 w-fit`} style={{background:'rgba(0,0,0,0.06)'}}>
-                          {[['students','👥 학생 목록'],['announcements','📢 공지사항'],['materials','📚 예시 자료'],['chat','💬 채팅']].map(([key, label]) => (
+                          {[['students','학생 목록'],['announcements','공지사항'],['materials','예시 자료'],['chat','채팅']].map(([key, label]) => (
                             <button key={key} onClick={() => setClassroomTab(key)} className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${classroomTab===key ? 'bg-emerald-600 text-white shadow-md' : 'opacity-50 hover:opacity-80'}`}>{label}</button>
                           ))}
                         </div>
@@ -1879,7 +2081,7 @@ export default function App() {
                         {classroomTab === 'announcements' && (
                           <div className="space-y-4">
                             <div className={`p-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50/40`}>
-                              <div className="text-xs font-black text-emerald-700 mb-2 flex items-center gap-1.5">📢 새 공지 작성</div>
+                              <div className="text-xs font-black text-emerald-700 mb-2 flex items-center gap-1.5">새 공지 작성</div>
                               <textarea value={announcementDraft} onChange={e => setAnnouncementDraft(e.target.value)} placeholder="전체 학생에게 전달할 내용을 입력하세요..." rows={3} className="w-full p-3 rounded-xl border border-emerald-200 bg-white text-sm focus:border-emerald-500 outline-none resize-none mb-2"/>
                               <button onClick={saveAnnouncement} disabled={!announcementDraft.trim()} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow transition-all disabled:opacity-40"><Save size={14}/> 공지 등록</button>
                             </div>
@@ -2072,23 +2274,38 @@ export default function App() {
                 {/* ── 상단: 모드 탭 + 서재로 버튼 ── */}
                 <div className="flex justify-between items-center mb-5">
                   <div className="flex gap-1.5">
-                    {[['list','📋 목록'],['mindmap','🗺️ 마인드맵'],['journal','📖 독서록']].map(([m, label]) => (
+                    {[['list','목록'],['mindmap','마인드맵'],['journal','독서록']].map(([m, label]) => (
                       <button key={m} onClick={() => setBookMode(m)}
                         className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all ${bookMode===m ? `${currentTheme.primaryBg} text-white shadow-md` : 'bg-black/5 hover:bg-black/10 opacity-60 hover:opacity-100'}`}>
                         {label}
                       </button>
                     ))}
                   </div>
-                  <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
-                    <ChevronLeft size={13}/> 서재로
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={handleShareBookRecord} className="booknote-share-record-button flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100 hover:bg-blue-100 transition-all">
+                      <Share2 size={13}/> 기록 공유
+                    </button>
+                    <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full bg-black/5 hover:bg-black/10 opacity-50 hover:opacity-100 transition-all">
+                      <ChevronLeft size={13}/> 서재로
+                    </button>
+                  </div>
                 </div>
 
                 {/* ── 책 정보 (항상 표시) ── */}
                 <div className="mb-6 flex gap-8">
                   <label className={`w-28 h-40 rounded-xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center cursor-pointer hover:opacity-70 overflow-hidden relative shrink-0 ${selectedBook.coverUrl?'':'bg-black/5'}`}>
                     {selectedBook.coverUrl ? <img src={selectedBook.coverUrl} className="w-full h-full object-cover" alt="cover"/> : <span className="text-xs opacity-50 text-center p-2">표지 추가</span>}
-                    <input type="file" accept="image/*" className="hidden" onChange={e=>{if(e.target.files[0]) updateBook(selectedBook.id, {coverUrl: URL.createObjectURL(e.target.files[0])})}} />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async e => {
+                        if (e.target.files[0]) {
+                          updateBook(selectedBook.id, { coverUrl: await readImageFileAsDataUrl(e.target.files[0]) });
+                          e.target.value = '';
+                        }
+                      }}
+                    />
                   </label>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2">
@@ -2365,7 +2582,7 @@ export default function App() {
                           <div>
                             <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-1.5">추천 여부</div>
                             <div className="flex gap-2">
-                              {[[true,'👍 추천'],[false,'👎 비추천']].map(([v,label])=>(
+                              {[[true,'추천'],[false,'비추천']].map(([v,label])=>(
                                 <button key={String(v)} onClick={()=>upJ('recommend',j.recommend===v?null:v)}
                                   className={`px-3 py-1 rounded-full text-xs font-bold border transition-all ${j.recommend===v?`${currentTheme.primaryBg} text-white border-transparent`:`${currentTheme.border} opacity-50 hover:opacity-100`}`}>
                                   {label}
@@ -2376,21 +2593,21 @@ export default function App() {
                         </div>
                         {/* 줄거리 요약 */}
                         <div>
-                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">📝 줄거리 요약</div>
+                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">줄거리 요약</div>
                           <textarea value={j.summary||''} onChange={e=>upJ('summary',e.target.value)}
                             placeholder="책의 주요 내용을 간략히 요약해 보세요..."
                             className={`w-full min-h-[100px] border ${currentTheme.border} rounded-xl px-4 py-3 text-sm bg-transparent outline-none focus:ring-2 focus:ring-blue-400 resize-none leading-relaxed`}/>
                         </div>
                         {/* 인상 깊은 구절 */}
                         <div>
-                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">💬 인상 깊은 구절</div>
+                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">인상 깊은 구절</div>
                           <textarea value={j.quote||''} onChange={e=>upJ('quote',e.target.value)}
                             placeholder="마음에 남는 문장이나 구절을 적어보세요..."
                             className={`w-full min-h-[80px] border ${currentTheme.border} rounded-xl px-4 py-3 text-sm bg-transparent outline-none focus:ring-2 focus:ring-blue-400 resize-none leading-relaxed italic`}/>
                         </div>
                         {/* 느낀 점 */}
                         <div>
-                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">💭 느낀 점 / 감상</div>
+                          <div className="text-xs font-black opacity-50 uppercase tracking-widest mb-2">느낀 점 / 감상</div>
                           <textarea value={j.impression||''} onChange={e=>upJ('impression',e.target.value)}
                             placeholder="책을 읽고 느낀 점, 배운 점, 삶에 어떻게 적용할 것인지 써보세요..."
                             className={`w-full min-h-[120px] border ${currentTheme.border} rounded-xl px-4 py-3 text-sm bg-transparent outline-none focus:ring-2 focus:ring-blue-400 resize-none leading-relaxed`}/>
@@ -2450,6 +2667,44 @@ export default function App() {
                   </div>
                   <input value={selectedDetail.title} onChange={e=>{const v=e.target.value;setSelectedDetail({...selectedDetail,title:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,title:v}:d))}} className="text-2xl font-black bg-transparent outline-none border-b border-transparent focus:border-gray-200 pb-2"/>
                   <textarea value={selectedDetail.content} onChange={e=>{const v=e.target.value;setSelectedDetail({...selectedDetail,content:v});setDetails(details.map(d=>d.id===selectedDetail.id?{...d,content:v}:d))}} className="min-h-[300px] bg-transparent outline-none resize-none leading-relaxed text-lg" placeholder="내용을 입력하세요..."/>
+                  <div className={`booknote-photo-panel border-t ${currentTheme.border} pt-5`}>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="flex items-center gap-2 text-sm font-black opacity-70">
+                        <ImagePlus size={16}/>
+                        사진 첨부
+                      </div>
+                      <label className={`cursor-pointer flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold ${currentTheme.primaryBg} text-white shadow-sm hover:opacity-90 transition-opacity`}>
+                        <Plus size={13}/>
+                        사진 추가
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={e => {
+                            handleAttachDetailPhotos(e.target.files);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
+                    {(selectedDetail.photos || []).length === 0 ? (
+                      <div className="text-xs opacity-40 border border-dashed border-black/20 rounded-2xl px-4 py-6 text-center">
+                        기록과 함께 남길 사진을 추가할 수 있습니다.
+                      </div>
+                    ) : (
+                      <div className="booknote-photo-grid">
+                        {(selectedDetail.photos || []).map(photo => (
+                          <div key={photo.id} className="booknote-photo-item">
+                            <img src={photo.url} alt={photo.name || '첨부 사진'} />
+                            <button onClick={() => handleRemoveDetailPhoto(photo.id)} title="사진 삭제">
+                              <X size={14}/>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   {selectedDetail.videoUrl && getYoutubeId(selectedDetail.videoUrl) && (
                     <div className="mt-8 border-t pt-8">
                       <h4 className="text-sm font-bold opacity-60 mb-4 flex items-center gap-2"><Video size={16}/> 관련 영상</h4>
@@ -2744,7 +2999,7 @@ export default function App() {
             </div>
             {/* 탭 */}
             <div className={`flex gap-1 p-2 shrink-0`} style={{background:'rgba(0,0,0,0.04)'}}>
-              {[['announcements','📢 공지사항'],['materials','📚 예시 자료'],['message','💬 선생님과 대화']].map(([key, label]) => (
+              {[['announcements','공지사항'],['materials','예시 자료'],['message','선생님과 대화']].map(([key, label]) => (
                 <button key={key} onClick={() => setTeacherPanelTab(key)} className={`flex-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${teacherPanelTab===key ? 'bg-emerald-600 text-white shadow' : 'opacity-50 hover:opacity-80'}`}>{label}</button>
               ))}
             </div>
