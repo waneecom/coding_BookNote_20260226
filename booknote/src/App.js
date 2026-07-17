@@ -16,6 +16,32 @@ const getYoutubeId = (url) => {
   return (match && match[2].length === 11) ? match[2] : null;
 };
 
+const LOCAL_USERS_KEY = 'booknote_local_users';
+const LOCAL_SAVES_KEY = 'booknote_local_saves';
+
+const readJsonStorage = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const writeJsonStorage = (key, value) => {
+  localStorage.setItem(key, JSON.stringify(value));
+};
+
+const readLocalUsers = () => readJsonStorage(LOCAL_USERS_KEY, {});
+const writeLocalUsers = (users) => writeJsonStorage(LOCAL_USERS_KEY, users);
+const readLocalSaves = () => readJsonStorage(LOCAL_SAVES_KEY, {});
+const readLocalSave = (userId) => readLocalSaves()[userId] || null;
+const writeLocalSave = (userId, data) => {
+  if (!userId) return;
+  const saves = readLocalSaves();
+  writeJsonStorage(LOCAL_SAVES_KEY, { ...saves, [userId]: data });
+};
+
 export default function App() {
   // --- 상태 관리 ---
   const [isAppLoading, setIsAppLoading] = useState(true);
@@ -69,6 +95,7 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authType, setAuthType] = useState('personal'); // 'personal' | 'education'
   const [authClassCode, setAuthClassCode] = useState('');
+  const [storageMode, setStorageMode] = useState('cloud'); // 'cloud' | 'local'
 
   // --- 독자 현황 / 친구 ---
   const [showSocialPanel, setShowSocialPanel] = useState(false);
@@ -112,6 +139,7 @@ export default function App() {
   const isInitialized = useRef(false);
   const mmRef = useRef(null);
   const mmMovedRef = useRef(false);
+  const spellRunIdRef = useRef(0);
   // stale closure 방지: setTimeout 내부에서 항상 최신값 참조
   const databasesRef = useRef(databases);
   const currentLibraryRef = useRef(currentLibrary);
@@ -156,17 +184,29 @@ export default function App() {
       setDatabases(updatedDb);
       localStorage.setItem('booknote_web_final', JSON.stringify(updatedDb));
 
-      const { error } = await supabase
-        .from('booknote_saves')
-        .upsert({ id: currentUserRef.current?.id, data: updatedDb });
-
-      if (!error) {
+      try {
+        if (!isSupabaseConfigured || storageMode === 'local') {
+          writeLocalSave(currentUserRef.current?.id, updatedDb);
+        } else {
+          const { error } = await supabase
+            .from('booknote_saves')
+            .upsert({ id: currentUserRef.current?.id, data: updatedDb });
+          if (error) throw error;
+          writeLocalSave(currentUserRef.current?.id, updatedDb);
+        }
         setIsSaved(true);
         setTimeout(() => setIsSaved(false), 2000);
-      } else {
-        console.error('클라우드 저장 실패:', error);
-        setIsSaved('error');
-        setTimeout(() => setIsSaved(false), 3000);
+      } catch (err) {
+        if (isNetworkFetchError(err)) {
+          setStorageMode('local');
+          writeLocalSave(currentUserRef.current?.id, updatedDb);
+          setIsSaved(true);
+          setTimeout(() => setIsSaved(false), 2000);
+        } else {
+          console.error('클라우드 저장 실패:', err);
+          setIsSaved('error');
+          setTimeout(() => setIsSaved(false), 3000);
+        }
       }
     }, 2000);
 
@@ -207,41 +247,181 @@ export default function App() {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  const loadUserData = async (userId, displayName, initMeta = null) => {
+  const isNetworkFetchError = (err) => {
+    const message = String(err?.message || err || '');
+    return err?.name === 'TypeError' || message.includes('Failed to fetch');
+  };
+
+  const createEmptyDatabase = (displayName, initMeta = null) => {
+    const libData = { books: [], chapters: [], details: [], customGenres: [] };
+    return initMeta ? { [displayName]: libData, __meta: initMeta } : { [displayName]: libData };
+  };
+
+  const applyDatabase = (db, displayName) => {
+    const firstLib = Object.keys(db).find(k => !k.startsWith('__')) || displayName;
+    const lib = db[firstLib] || { books: [], chapters: [], details: [], customGenres: [] };
+    setDatabases(db);
+    setCurrentLibrary(firstLib);
+    setBooks(lib.books || []);
+    setChapters(lib.chapters || []);
+    setDetails(lib.details || []);
+    setCustomGenres(lib.customGenres || []);
+    localStorage.setItem('booknote_web_final', JSON.stringify(db));
+  };
+
+  const loadLocalUserData = (userId, displayName, initMeta = null) => {
+    const localDb = readLocalSave(userId);
+    const db = localDb || createEmptyDatabase(displayName, initMeta);
+    if (!localDb) writeLocalSave(userId, db);
+    applyDatabase(db, displayName);
+  };
+
+  const finishAuth = async (user, initMeta = null, preferLocal = false) => {
+    setCurrentUser(user);
+    localStorage.setItem('booknote_session', JSON.stringify(user));
+    setIsAppLoading(true);
+    await loadUserData(user.id, user.displayName, initMeta, preferLocal);
+  };
+
+  const loadUserData = async (userId, displayName, initMeta = null, preferLocal = false) => {
+    if (preferLocal || !isSupabaseConfigured || storageMode === 'local') {
+      setStorageMode('local');
+      loadLocalUserData(userId, displayName, initMeta);
+      setIsAppLoading(false);
+      return;
+    }
+
     try {
       const { data } = await supabase.from('booknote_saves').select('data').eq('id', userId).single();
       if (data?.data) {
         const db = data.data;
-        const firstLib = Object.keys(db).find(k => !k.startsWith('__'));
-        setDatabases(db);
-        setCurrentLibrary(firstLib);
-        setBooks(db[firstLib].books || []);
-        setChapters(db[firstLib].chapters || []);
-        setDetails(db[firstLib].details || []);
-        setCustomGenres(db[firstLib].customGenres || []);
-        localStorage.setItem('booknote_web_final', JSON.stringify(db));
+        applyDatabase(db, displayName);
+        writeLocalSave(userId, db);
       } else {
-        const libData = { books: [], chapters: [], details: [], customGenres: [] };
         // initMeta가 있으면 (교육 계정) __meta 포함하여 최초 저장
-        const newDb = initMeta
-          ? { [displayName]: libData, __meta: initMeta }
-          : { [displayName]: libData };
+        const newDb = createEmptyDatabase(displayName, initMeta);
         await supabase.from('booknote_saves').upsert({ id: userId, data: newDb });
-        setDatabases(newDb);
-        setCurrentLibrary(displayName);
-        setBooks([]); setChapters([]); setDetails([]); setCustomGenres([]);
-        localStorage.setItem('booknote_web_final', JSON.stringify(newDb));
+        applyDatabase(newDb, displayName);
+        writeLocalSave(userId, newDb);
       }
     } catch (err) {
       console.error('데이터 로딩 실패:', err);
-      setDatabases(null);
+      if (isNetworkFetchError(err)) {
+        setStorageMode('local');
+        loadLocalUserData(userId, displayName, initMeta);
+      } else {
+        setDatabases(null);
+      }
     } finally {
       setIsAppLoading(false);
     }
   };
 
+  const getLocalAccountMode = (userId) => readLocalSave(userId)?.__meta?.mode || 'personal';
+
+  const signupLocally = async (name, initMeta = null) => {
+    const localUsers = readLocalUsers();
+    if (localUsers[name]) {
+      const existingMode = getLocalAccountMode(name);
+      const signupMode = initMeta?.mode || 'personal';
+      if (existingMode === 'education' && signupMode !== 'education') {
+        return setAuthError('이 이름은 교육 버전 계정으로 등록되어 있습니다. 교육 버전으로 로그인하거나 다른 이름을 사용하세요.');
+      }
+      if (existingMode !== 'education' && signupMode === 'education') {
+        return setAuthError('이 이름은 일반 버전 계정으로 등록되어 있습니다. 일반 버전으로 로그인하거나 다른 이름을 사용하세요.');
+      }
+      return setAuthError('이미 사용 중인 이름입니다. 다른 이름을 사용해주세요.');
+    }
+
+    const hash = await hashPassword(authPassword);
+    writeLocalUsers({
+      ...localUsers,
+      [name]: { id: name, password_hash: hash, display_name: name }
+    });
+    setStorageMode('local');
+    await finishAuth({ id: name, displayName: name }, initMeta, true);
+  };
+
+  const loginLocally = async (name) => {
+    const localUser = readLocalUsers()[name];
+    if (!localUser) {
+      return setAuthError('현재 서버에 연결할 수 없어 이 브라우저에 저장된 계정만 로그인할 수 있습니다. 먼저 회원가입을 해주세요.');
+    }
+
+    const hash = await hashPassword(authPassword);
+    if (localUser.password_hash !== hash) return setAuthError('비밀번호가 올바르지 않습니다.');
+
+    const savedMode = getLocalAccountMode(name);
+    const loginMode = authType === 'education' ? 'education' : 'personal';
+    if (savedMode === 'education' && loginMode !== 'education') return setAuthError('이 계정은 교육 버전 계정입니다. 위에서 [교육] 버튼을 누르고 로그인해주세요.');
+    if (savedMode !== 'education' && loginMode === 'education') return setAuthError('이 계정은 일반 버전 계정입니다. 위에서 [일반] 버튼을 누르고 로그인해주세요.');
+
+    setStorageMode('local');
+    await finishAuth({ id: localUser.id, displayName: localUser.display_name }, null, true);
+  };
+
+  const getLocalUsersList = () => {
+    const localUsers = readLocalUsers();
+    return Object.values(localUsers).map(u => ({ id: u.id, display_name: u.display_name || u.id }));
+  };
+
+  const getLocalSavesList = () => {
+    const localSaves = readLocalSaves();
+    return Object.entries(localSaves).map(([id, data]) => ({ id, data }));
+  };
+
+  const loadUsersAndSaves = async () => {
+    if (!isSupabaseConfigured || storageMode === 'local') {
+      return { users: getLocalUsersList(), saves: getLocalSavesList(), local: true };
+    }
+
+    try {
+      const [{ data: users }, { data: saves }] = await Promise.all([
+        supabase.from('booknote_users').select('id, display_name'),
+        supabase.from('booknote_saves').select('id, data')
+      ]);
+      return { users: users || [], saves: saves || [], local: false };
+    } catch (err) {
+      if (isNetworkFetchError(err)) {
+        setStorageMode('local');
+        return { users: getLocalUsersList(), saves: getLocalSavesList(), local: true };
+      }
+      throw err;
+    }
+  };
+
+  const loadSaveById = async (userId) => {
+    if (!isSupabaseConfigured || storageMode === 'local') {
+      const data = readLocalSave(userId);
+      return data ? { data } : null;
+    }
+
+    try {
+      const { data } = await supabase.from('booknote_saves').select('data').eq('id', userId).single();
+      return data;
+    } catch (err) {
+      if (isNetworkFetchError(err)) {
+        setStorageMode('local');
+        const data = readLocalSave(userId);
+        return data ? { data } : null;
+      }
+      throw err;
+    }
+  };
+
+  const saveUserDataById = async (userId, data) => {
+    writeLocalSave(userId, data);
+    if (!isSupabaseConfigured || storageMode === 'local') return;
+
+    try {
+      await supabase.from('booknote_saves').upsert({ id: userId, data });
+    } catch (err) {
+      if (isNetworkFetchError(err)) setStorageMode('local');
+      else throw err;
+    }
+  };
+
   const handleSignup = async () => {
-    if (!isSupabaseConfigured) return setAuthError('서버 연결이 설정되지 않았습니다. Vercel 환경 변수(REACT_APP_SUPABASE_URL, REACT_APP_SUPABASE_ANON_KEY)를 추가한 후 재배포해주세요.');
     const name = authName.trim();
     const isEduSignup = authType === 'education';
     if (!name || !authPassword) return setAuthError('이름과 비밀번호를 입력해주세요.');
@@ -257,6 +437,19 @@ export default function App() {
       if (!/^[a-zA-Z0-9가-힣\-_]+$/.test(code)) return setAuthError('클래스 코드는 영문/숫자/한글/-/_ 만 사용할 수 있습니다.');
     }
     setIsAuthLoading(true); setAuthError('');
+    const initMeta = isEduSignup
+      ? { friends: [], mode: 'education', classCode: authClassCode.trim(), role: authEduRole }
+      : null;
+
+    if (!isSupabaseConfigured || storageMode === 'local') {
+      try {
+        await signupLocally(name, initMeta);
+      } finally {
+        setIsAuthLoading(false);
+      }
+      return;
+    }
+
     try {
       const { data: existing } = await supabase.from('booknote_users').select('id').eq('id', name).maybeSingle();
       if (existing) {
@@ -270,18 +463,11 @@ export default function App() {
       const hash = await hashPassword(authPassword);
       const { error } = await supabase.from('booknote_users').insert({ id: name, password_hash: hash, display_name: name });
       if (error) throw error;
-      const user = { id: name, displayName: name };
-      setCurrentUser(user);
-      localStorage.setItem('booknote_session', JSON.stringify(user));
-      setIsAppLoading(true);
       // 교육 모드는 initMeta 포함하여 한 번에 저장 (race condition 방지)
-      const initMeta = isEduSignup
-        ? { friends: [], mode: 'education', classCode: authClassCode.trim(), role: authEduRole }
-        : null;
-      await loadUserData(name, name, initMeta);
+      await finishAuth({ id: name, displayName: name }, initMeta);
     } catch (err) {
-      if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
-        setAuthError('서버에 연결할 수 없습니다. Supabase 프로젝트가 일시 정지됐거나 Vercel 환경 변수가 없습니다. supabase.com에서 프로젝트 상태를 확인해주세요.');
+      if (isNetworkFetchError(err)) {
+        await signupLocally(name, initMeta);
       } else if (err.message?.includes('schema cache') || err.code === 'PGRST204') {
         setAuthError('DB 테이블을 찾을 수 없습니다. Supabase SQL Editor에서 NOTIFY pgrst, \'reload schema\'; 를 실행해주세요.');
       } else {
@@ -293,10 +479,18 @@ export default function App() {
   };
 
   const handleLogin = async () => {
-    if (!isSupabaseConfigured) return setAuthError('서버 연결이 설정되지 않았습니다. Vercel 환경 변수(REACT_APP_SUPABASE_URL, REACT_APP_SUPABASE_ANON_KEY)를 추가한 후 재배포해주세요.');
     const name = authName.trim();
     if (!name || !authPassword) return setAuthError('이름과 비밀번호를 입력해주세요.');
     setIsAuthLoading(true); setAuthError('');
+    if (!isSupabaseConfigured || storageMode === 'local') {
+      try {
+        await loginLocally(name);
+      } finally {
+        setIsAuthLoading(false);
+      }
+      return;
+    }
+
     try {
       const { data: user, error } = await supabase.from('booknote_users').select('id, display_name, password_hash').eq('id', name).single();
       if (error) {
@@ -314,14 +508,10 @@ export default function App() {
         if (savedMode === 'education' && loginMode !== 'education') return setAuthError('이 계정은 교육 버전 계정입니다. 위에서 [교육] 버튼을 누르고 로그인해주세요.');
         if (savedMode !== 'education' && loginMode === 'education') return setAuthError('이 계정은 일반 버전 계정입니다. 위에서 [일반] 버튼을 누르고 로그인해주세요.');
       }
-      const session = { id: user.id, displayName: user.display_name };
-      setCurrentUser(session);
-      localStorage.setItem('booknote_session', JSON.stringify(session));
-      setIsAppLoading(true);
-      await loadUserData(user.id, user.display_name);
+      await finishAuth({ id: user.id, displayName: user.display_name });
     } catch (err) {
-      if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
-        setAuthError('서버에 연결할 수 없습니다. Supabase 프로젝트가 일시 정지됐거나 Vercel 환경 변수가 없습니다. supabase.com에서 프로젝트 상태를 확인해주세요.');
+      if (isNetworkFetchError(err)) {
+        await loginLocally(name);
       } else if (err.message?.includes('schema cache') || err.code === 'PGRST204') {
         setAuthError('DB 테이블을 찾을 수 없습니다. Supabase SQL Editor에서 NOTIFY pgrst, \'reload schema\'; 를 실행해주세요.');
       } else {
@@ -425,9 +615,62 @@ export default function App() {
 
   const handleRunSpellCheck = async () => {
     if (!selectedDetail || !selectedDetail.content) return;
+    const runId = ++spellRunIdRef.current;
     setIsCheckingSpelling(true);
     setSpellMessage('');
-    const text = selectedDetail.content;
+    const text = (spellCorrection || selectedDetail.content || '').trim();
+    if (!text) {
+      setIsCheckingSpelling(false);
+      return;
+    }
+
+    const isCurrentSpellRun = () => spellRunIdRef.current === runId;
+    const finishSpellCheck = () => {
+      if (isCurrentSpellRun()) setIsCheckingSpelling(false);
+    };
+
+    const runLocalSpellCheck = (sourceLabel = '기본 교정') => {
+      let correctedText = text;
+      const rules = [
+        // 자주 치는 인사/종결 오타
+        [/안농/g, '안녕'], [/안뇽/g, '안녕'],
+        [/안녕하세여/g, '안녕하세요'], [/안녕하새요/g, '안녕하세요'],
+        [/감사합니당/g, '감사합니다'], [/고마워용/g, '고마워요'],
+        // 안/않 구분
+        [/않돼/g, '안 돼'], [/않되/g, '안 돼'], [/않해/g, '안 해'],
+        [/않좋/g, '안 좋'], [/않되요/g, '안 돼요'],
+        // 되/돼 구분
+        [/되요/g, '돼요'], [/됬/g, '됐'], [/돼었/g, '되었'],
+        [/안되/g, '안 돼'], [/안돼요/g, '안 돼요'],
+        // 왜/웬/왠
+        [/웬지/g, '왠지'], [/왠만/g, '웬만'], [/왠일/g, '웬일'],
+        // 맞춤법 오류
+        [/오랫만/g, '오랜만'], [/어떻해/g, '어떡해'],
+        [/바램/g, '바람'], [/움지이/g, '움직이'],
+        // ㅅ/ㅆ 받침 혼동
+        [/재밋/g, '재밌'], [/맛잇/g, '맛있'], [/멋잇/g, '멋있'],
+        // 띄어쓰기
+        [/할수있/g, '할 수 있'], [/할수없/g, '할 수 없'],
+        [/할 수있/g, '할 수 있'], [/할 수없/g, '할 수 없'],
+        [/것같/g, '것 같'], [/수밖에/g, '수밖에'],
+      ];
+
+      let count = 0;
+      for (const [pattern, replacement] of rules) {
+        const matches = correctedText.match(pattern);
+        if (matches?.length) count += matches.length;
+        correctedText = correctedText.replace(pattern, replacement);
+      }
+
+      if (!isCurrentSpellRun()) return count > 0;
+      if (count > 0) {
+        setSpellMessage(`✨ ${sourceLabel}: ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+        setSpellCorrection(correctedText);
+      } else {
+        setSpellMessage('⚠️ 오타를 찾지 못했습니다. 서버 맞춤법 API가 연결되지 않은 경우, 현재는 내장 교정 사전으로만 검사합니다.');
+      }
+      return count > 0;
+    };
 
     // 1) Vercel 서버리스 API 호출 (카카오 맞춤법 검사기)
     try {
@@ -437,57 +680,26 @@ export default function App() {
         body: JSON.stringify({ text }),
         signal: AbortSignal.timeout(12000)
       });
-      if (res.ok) {
-        const result = await res.json();
-        if (!result.error) {
-          if (result.changed) {
-            setSpellMessage(`✨ ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
-            setSpellCorrection(result.corrected);
-          } else {
-            setSpellMessage('✅ 맞춤법 검사 완료: 오류가 없습니다!');
-          }
-          setIsCheckingSpelling(false);
-          return;
-        }
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('맞춤법 API가 현재 실행 중이 아닙니다.');
       }
-    } catch { /* API 실패 → 로컬 패턴으로 폴백 */ }
+      const result = await res.json();
+      if (result.error) throw new Error(result.error);
 
-    // 2) 로컬 패턴 폴백 (API 접근 불가 / 개발 환경)
-    setTimeout(() => {
-      let correctedText = text;
-      const rules = [
-        // 안/않 구분
-        [/않돼/g, '안 돼'], [/않되/g, '안 돼'], [/않해/g, '안 해'],
-        [/않좋/g, '안 좋'], [/않되요/g, '안 돼요'],
-        // 되/돼 구분
-        [/됬/g, '됐'], [/돼었/g, '되었'],
-        // 왜/웬/왠
-        [/웬지/g, '왠지'], [/왠만/g, '웬만'], [/왠일/g, '웬일'],
-        // 맞춤법 오류
-        [/오랫만/g, '오랜만'], [/어떻해/g, '어떡해'],
-        [/바램/g, '바람'], [/움지이/g, '움직이'],
-        // ㅅ/ㅆ 받침 혼동
-        [/재밋/g, '재밌'], [/맛잇/g, '맛있'],
-        [/멋잇/g, '멋있'], [/재밋/g, '재밌'],
-        // 띄어쓰기
-        [/할수있/g, '할 수 있'], [/할수없/g, '할 수 없'],
-        [/것같/g, '것 같'], [/것이다/g, '것이다'],
-      ];
-      let count = 0;
-      const fixes = [];
-      for (const [pattern, replacement] of rules) {
-        const before = correctedText;
-        correctedText = correctedText.replace(pattern, replacement);
-        if (correctedText !== before) { count++; fixes.push(replacement); }
+      if (!isCurrentSpellRun()) return;
+      if (result.changed) {
+        setSpellMessage(`✨ 서버 맞춤법 검사: ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
+        setSpellCorrection(result.corrected);
+      } else if (!runLocalSpellCheck('기본 교정')) {
+        setSpellMessage('✅ 맞춤법 검사 완료: 오류가 없습니다!');
       }
-      if (count > 0) {
-        setSpellMessage(`✨ ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
-        setSpellCorrection(correctedText);
-      } else {
-        setSpellMessage('⚠️ 오타를 찾지 못했습니다.');
-      }
-      setIsCheckingSpelling(false);
-    }, 400);
+    } catch {
+      // API 실패 → 로컬 패턴으로 폴백 (로컬 npm start 환경 포함)
+      runLocalSpellCheck('기본 교정');
+    } finally {
+      finishSpellCheck();
+    }
   };
 
   const applySpellCorrection = () => {
@@ -708,8 +920,9 @@ export default function App() {
 
   const saveMeta = async (newMeta) => {
     const updatedDb = { ...databasesRef.current, __meta: newMeta };
+    databasesRef.current = updatedDb;
     setDatabases(updatedDb);
-    await supabase.from('booknote_saves').upsert({ id: currentUserRef.current?.id, data: updatedDb });
+    await saveUserDataById(currentUserRef.current?.id, updatedDb);
   };
 
   const sendFriendRequest = async (targetId) => {
@@ -756,10 +969,7 @@ export default function App() {
   const loadSocialData = async () => {
     setIsSocialLoading(true);
     try {
-      const [{ data: users }, { data: saves }] = await Promise.all([
-        supabase.from('booknote_users').select('id, display_name'),
-        supabase.from('booknote_saves').select('id, data')
-      ]);
+      const { users, saves } = await loadUsersAndSaves();
       const myFriends = databasesRef.current?.__meta?.friends || [];
       const result = (users || [])
         .filter(u => u.id !== currentUser?.id)
@@ -804,10 +1014,7 @@ export default function App() {
     try {
       const myClassCode = databasesRef.current?.__meta?.classCode;
       if (!myClassCode) { setIsClassroomLoading(false); return; }
-      const [{ data: users }, { data: saves }] = await Promise.all([
-        supabase.from('booknote_users').select('id, display_name'),
-        supabase.from('booknote_saves').select('id, data')
-      ]);
+      const { users, saves } = await loadUsersAndSaves();
       const result = (saves || [])
         .filter(s => s.id !== currentUser?.id && s.data?.__meta?.classCode === myClassCode && s.data?.__meta?.role !== 'teacher')
         .map(s => {
@@ -839,7 +1046,7 @@ export default function App() {
   const saveFeedbackToStudent = async (studentId, detailId, text, score) => {
     setFeedbackSaving(prev => ({ ...prev, [detailId]: true }));
     try {
-      const { data: studentSave } = await supabase.from('booknote_saves').select('data').eq('id', studentId).single();
+      const studentSave = await loadSaveById(studentId);
       if (!studentSave?.data) return;
       const updatedData = JSON.parse(JSON.stringify(studentSave.data));
       Object.values(updatedData).forEach(lib => {
@@ -847,7 +1054,7 @@ export default function App() {
         const detail = lib.details.find(d => d.id === detailId);
         if (detail) detail.teacherFeedback = { text, score: Number(score) || 0, teacherName: currentUser.displayName };
       });
-      await supabase.from('booknote_saves').upsert({ id: studentId, data: updatedData });
+      await saveUserDataById(studentId, updatedData);
       // 로컬 classroomData도 업데이트
       setClassroomData(prev => prev.map(s => s.id !== studentId ? s : {
         ...s,
@@ -866,7 +1073,7 @@ export default function App() {
     try {
       const myClassCode = databasesRef.current?.__meta?.classCode;
       if (!myClassCode) return;
-      const { data: saves } = await supabase.from('booknote_saves').select('id, data');
+      const { saves } = await loadUsersAndSaves();
       const teacherSave = (saves || []).find(s => s.data?.__meta?.classCode === myClassCode && s.data?.__meta?.role === 'teacher');
       if (teacherSave) {
         const myMsgs = databasesRef.current?.__meta?.messages?.[teacherSave.id] || [];
@@ -915,11 +1122,11 @@ export default function App() {
     setMessageDraft('');
     // 상대방 데이터에도 저장
     try {
-      const { data: target } = await supabase.from('booknote_saves').select('data').eq('id', toId).single();
+      const target = await loadSaveById(toId);
       if (target?.data) {
         const tMeta = target.data.__meta || {};
         const tMsgs = { ...(tMeta.messages || {}), [currentUser.id]: [...(tMeta.messages?.[currentUser.id] || []), msg] };
-        await supabase.from('booknote_saves').upsert({ id: toId, data: { ...target.data, __meta: { ...tMeta, messages: tMsgs } } });
+        await saveUserDataById(toId, { ...target.data, __meta: { ...tMeta, messages: tMsgs } });
       }
     } catch {}
     // 학생이면 teacherInfo 메시지 업데이트
@@ -1039,10 +1246,12 @@ export default function App() {
                   type="button"
                   tabIndex={-1}
                   onClick={() => setShowAuthPassword(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-100"
+                  className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full border ${currentTheme.border} bg-white/60 flex items-center justify-center ${currentTheme.primary} shadow-sm hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300`}
                   aria-label={showAuthPassword ? '비밀번호 숨기기' : '비밀번호 표시'}
+                  aria-pressed={showAuthPassword}
+                  title={showAuthPassword ? '비밀번호 숨기기' : '비밀번호 보기'}
                 >
-                  {showAuthPassword ? <EyeOff size={16}/> : <Eye size={16}/>}
+                  {showAuthPassword ? <EyeOff size={17}/> : <Eye size={17}/>}
                 </button>
               </div>
             </div>
@@ -1062,10 +1271,12 @@ export default function App() {
                     type="button"
                     tabIndex={-1}
                     onClick={() => setShowAuthConfirmPw(v => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-100"
+                    className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full border ${currentTheme.border} bg-white/60 flex items-center justify-center ${currentTheme.primary} shadow-sm hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300`}
                     aria-label={showAuthConfirmPw ? '비밀번호 숨기기' : '비밀번호 표시'}
+                    aria-pressed={showAuthConfirmPw}
+                    title={showAuthConfirmPw ? '비밀번호 숨기기' : '비밀번호 보기'}
                   >
-                    {showAuthConfirmPw ? <EyeOff size={16}/> : <Eye size={16}/>}
+                    {showAuthConfirmPw ? <EyeOff size={17}/> : <Eye size={17}/>}
                   </button>
                 </div>
               </div>
