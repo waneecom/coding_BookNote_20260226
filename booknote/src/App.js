@@ -8,6 +8,7 @@ import {
   UserPlus, UserCheck, GraduationCap, Star, Eye, EyeOff
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase';
+import './App.css';
 
 const getYoutubeId = (url) => {
   if (!url) return null;
@@ -42,6 +43,13 @@ const writeLocalSave = (userId, data) => {
   writeJsonStorage(LOCAL_SAVES_KEY, { ...saves, [userId]: data });
 };
 
+const isMobileViewport = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(max-width: 768px)').matches;
+
+const getInitialSidebarTab = () => (isMobileViewport() ? null : 'search');
+
 export default function App() {
   // --- 상태 관리 ---
   const [isAppLoading, setIsAppLoading] = useState(true);
@@ -57,7 +65,7 @@ export default function App() {
   const [selectedBook, setSelectedBook] = useState(null);
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [selectedDetail, setSelectedDetail] = useState(null);
-  const [sidebarTab, setSidebarTab] = useState('search');
+  const [sidebarTab, setSidebarTab] = useState(getInitialSidebarTab);
   const [contextMenu, setContextMenu] = useState(null);
   const [editingBookId, setEditingBookId] = useState(null);
 
@@ -127,6 +135,25 @@ export default function App() {
   const [mmDrag, setMmDrag] = useState(null); // { t:'ch'|'d', id, ox, oy }
   const [mmEditKey, setMmEditKey] = useState(null); // 'ch-{id}' | 'd-{id}'
   const [mmEditText, setMmEditText] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+
+    const media = window.matchMedia('(max-width: 768px)');
+    const handleViewportChange = (event) => {
+      setSidebarTab(event.matches ? null : 'search');
+    };
+
+    if (media.matches) setSidebarTab(null);
+
+    if (media.addEventListener) {
+      media.addEventListener('change', handleViewportChange);
+      return () => media.removeEventListener('change', handleViewportChange);
+    }
+
+    media.addListener(handleViewportChange);
+    return () => media.removeListener(handleViewportChange);
+  }, []);
 
   const themeStyles = {
     light: { bg: 'bg-gray-50', text: 'text-gray-900', panel: 'bg-white', border: 'border-gray-200', primary: 'text-blue-600', primaryBg: 'bg-blue-600', primaryLight: 'bg-blue-50' },
@@ -1332,7 +1359,7 @@ export default function App() {
 
   // --- Left Sidebar ---
   const renderLeftNav = () => (
-    <aside className={`w-64 border-r ${currentTheme.border} ${currentTheme.panel} flex flex-col z-20 shadow-sm shrink-0 h-full`}>
+    <aside className={`booknote-left-nav w-64 border-r ${currentTheme.border} ${currentTheme.panel} flex flex-col z-20 shadow-sm shrink-0 h-full`}>
       <div className={`p-5 border-b ${currentTheme.border} flex flex-col gap-4`}>
         <div className="flex justify-between items-center">
           <h1 className={`text-xl font-black tracking-tighter flex items-center gap-2 ${currentTheme.primary}`}><BookOpen size={24} /> BookNote</h1>
@@ -1379,7 +1406,7 @@ export default function App() {
           </div>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-4 scrollbar-hide">
+      <div className="booknote-library-list flex-1 overflow-y-auto px-4 py-4 scrollbar-hide">
         {books.filter(b => !b.category || b.category.length === 0 || (b.category.length === 1 && b.category[0] === '')).length > 0 && (
           <div className="mb-4">
             <div className="flex items-center gap-2 px-2 py-2 rounded-lg font-medium opacity-80 mb-1"><Folder size={18} className="text-gray-400" /> 미분류</div>
@@ -1502,7 +1529,7 @@ export default function App() {
     const levelName = viewMode === 'editor' ? '세부 항목' : (viewMode === 'details' ? '챕터' : '책');
 
     return (
-      <aside className={`transition-all duration-300 border-l ${currentTheme.border} ${currentTheme.panel} flex flex-col z-20 shadow-lg shrink-0 ${sidebarTab ? 'w-80' : 'w-16'} h-full`}>
+      <aside className={`booknote-utility-panel ${sidebarTab ? 'booknote-utility-open' : 'booknote-utility-collapsed'} transition-all duration-300 border-l ${currentTheme.border} ${currentTheme.panel} flex flex-col z-20 shadow-lg shrink-0 ${sidebarTab ? 'w-80' : 'w-16'} h-full`}>
         <div className={`flex items-center border-b ${currentTheme.border}`}>
           <button onClick={() => setSidebarTab(sidebarTab ? null : 'search')} className="p-4 opacity-50 hover:opacity-100">{sidebarTab ? <PanelRightClose size={20}/> : <PanelRightOpen size={20}/>}</button>
           {sidebarTab && (
@@ -1515,7 +1542,7 @@ export default function App() {
         </div>
         <AnimatePresence>
           {sidebarTab && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 p-6 overflow-y-auto">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="booknote-utility-content flex-1 p-6 overflow-y-auto">
               {sidebarTab === 'search' && (
                 <div className="space-y-4">
                   <h3 className="font-bold flex items-center gap-2"><Search size={18}/> 검색</h3>
@@ -1599,12 +1626,12 @@ export default function App() {
 
   // --- Main Content ---
   return (
-    <div className={`flex h-screen w-full overflow-hidden transition-colors duration-500 font-sans ${currentTheme.bg} ${currentTheme.text}`} onClick={() => setContextMenu(null)}>
+    <div className={`booknote-shell flex h-screen w-full overflow-hidden transition-colors duration-500 font-sans ${currentTheme.bg} ${currentTheme.text}`} onClick={() => setContextMenu(null)}>
       {renderLeftNav()}
 
-      <main className="flex-1 flex flex-col relative z-0 min-w-0">
-        <header className={`h-16 border-b ${currentTheme.border} ${currentTheme.panel} flex items-center px-6 z-10 shadow-sm shrink-0`}>
-          <div className="flex items-center gap-2 text-sm font-medium opacity-60 flex-1">
+      <main className="booknote-main flex-1 flex flex-col relative z-0 min-w-0">
+        <header className={`booknote-topbar h-16 border-b ${currentTheme.border} ${currentTheme.panel} flex items-center px-6 z-10 shadow-sm shrink-0`}>
+          <div className="booknote-breadcrumb flex items-center gap-2 text-sm font-medium opacity-60 flex-1">
             <button onClick={() => {setViewMode('shelf'); setSelectedBook(null); setSelectedChapter(null); setSelectedDetail(null);}} className="hover:opacity-100 flex items-center gap-1 hover:text-blue-500 transition-colors"><Folder size={16}/> 서재</button>
             {selectedBook && <><ChevronRight size={14}/><button onClick={() => {setViewMode('chapters'); setSelectedChapter(null); setSelectedDetail(null);}} className={`hover:opacity-100 hover:text-blue-500 transition-colors truncate max-w-[150px] ${viewMode==='chapters'?'text-blue-500 font-bold opacity-100':''}`}>{selectedBook.title}</button></>}
             {selectedChapter && viewMode !== 'shelf' && <><ChevronRight size={14}/><button onClick={() => {setViewMode('details'); setSelectedDetail(null);}} className={`hover:opacity-100 hover:text-blue-500 transition-colors truncate max-w-[150px] ${viewMode==='details'?'text-blue-500 font-bold opacity-100':''}`}>{selectedChapter.title}</button></>}
@@ -1628,7 +1655,7 @@ export default function App() {
           )}
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="booknote-main-scroll flex-1 overflow-y-auto p-6">
           <AnimatePresence mode="wait">
             {viewMode === 'shelf' && (
               <motion.div key="shelf" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full">
@@ -2034,7 +2061,7 @@ export default function App() {
                       </div>
                     </motion.div>
                   ))}
-                  <button onClick={handleAddBook} className={`h-64 rounded-3xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center opacity-50 hover:opacity-100 hover:border-blue-500 hover:text-blue-500 transition-all gap-2`}><Plus size={32}/><span className="font-bold">새로운 책 추가</span></button>
+                  <button onClick={handleAddBook} className={`booknote-add-book-button h-64 rounded-3xl border-2 border-dashed ${currentTheme.border} flex flex-col items-center justify-center opacity-50 hover:opacity-100 hover:border-blue-500 hover:text-blue-500 transition-all gap-2`}><Plus size={32}/><span className="font-bold">새로운 책 추가</span></button>
                 </div>
                   </div>
                 )}
