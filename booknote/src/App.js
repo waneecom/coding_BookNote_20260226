@@ -67,6 +67,7 @@ export default function App() {
 
   const [spellCorrection, setSpellCorrection] = useState('');
   const [spellMessage, setSpellMessage] = useState('');
+  const [spellErrors, setSpellErrors] = useState([]);
   const [isCheckingSpelling, setIsCheckingSpelling] = useState(false);
 
   const [localCategory, setLocalCategory] = useState('');
@@ -608,17 +609,25 @@ export default function App() {
   useEffect(() => {
     if (sidebarTab === 'spell') {
       const targetData = getSpellCheckTarget();
-      if (targetData && targetData.obj) setSpellCorrection(targetData.obj.content || '');
-      else setSpellCorrection('');
+      if (targetData && targetData.obj) {
+        setSpellCorrection('');
+        setSpellMessage('');
+        setSpellErrors([]);
+      } else {
+        setSpellCorrection('');
+        setSpellMessage('');
+        setSpellErrors([]);
+      }
     }
-  }, [selectedDetail?.id, sidebarTab, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedDetail?.id, selectedDetail?.content, sidebarTab, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRunSpellCheck = async () => {
     if (!selectedDetail || !selectedDetail.content) return;
     const runId = ++spellRunIdRef.current;
     setIsCheckingSpelling(true);
     setSpellMessage('');
-    const text = (spellCorrection || selectedDetail.content || '').trim();
+    setSpellErrors([]);
+    const text = (selectedDetail.content || '').trim();
     if (!text) {
       setIsCheckingSpelling(false);
       return;
@@ -666,6 +675,14 @@ export default function App() {
       if (count > 0) {
         setSpellMessage(`✨ ${sourceLabel}: ${count}개 오류 발견! 아래에서 확인 후 적용하세요.`);
         setSpellCorrection(correctedText);
+        setSpellErrors(rules.flatMap(([pattern, replacement]) => {
+          const matches = text.match(pattern) || [];
+          return matches.map(original => ({
+            original,
+            suggestion: replacement,
+            info: '기본 교정 사전에서 찾은 자주 발생하는 오타입니다.'
+          }));
+        }));
       } else {
         setSpellMessage('⚠️ 오타를 찾지 못했습니다. 서버 맞춤법 API가 연결되지 않은 경우, 현재는 내장 교정 사전으로만 검사합니다.');
       }
@@ -691,6 +708,7 @@ export default function App() {
       if (result.changed) {
         setSpellMessage(`✨ 서버 맞춤법 검사: ${result.errorCount}개 오류 발견! 아래에서 확인 후 적용하세요.`);
         setSpellCorrection(result.corrected);
+        setSpellErrors(Array.isArray(result.errors) ? result.errors : []);
       } else if (!runLocalSpellCheck('기본 교정')) {
         setSpellMessage('✅ 맞춤법 검사 완료: 오류가 없습니다!');
       }
@@ -708,6 +726,7 @@ export default function App() {
     setDetails(details.map(d => d.id === newObj.id ? newObj : d));
     setSelectedDetail(newObj);
     setSpellMessage('✅ 적용 완료!');
+    setSpellErrors([]);
     setTimeout(() => setSpellMessage(''), 3000);
   };
 
@@ -1529,9 +1548,24 @@ export default function App() {
                         </button>
                       </div>
                       <div className="flex justify-center opacity-30"><ArrowDown size={20}/></div>
+                      {spellErrors.length > 0 && (
+                        <div className="bg-white/70 border border-blue-100 rounded-xl p-3 space-y-2">
+                          <div className="text-xs font-black text-blue-700">교정 설명</div>
+                          {spellErrors.map((err, i) => (
+                            <div key={`${err.original}-${i}`} className="text-xs leading-relaxed border-t border-blue-50 pt-2 first:border-t-0 first:pt-0">
+                              <div className="font-bold text-gray-800">
+                                <span className="text-red-500">{err.original || '(원문)'}</span>
+                                <span className="mx-1 opacity-40">→</span>
+                                <span className="text-blue-600">{err.suggestion || '(교정)'}</span>
+                              </div>
+                              {err.info && <div className="mt-1 text-gray-500">{err.info}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="flex flex-col gap-1">
-                        <span className="text-xs font-bold opacity-100 text-blue-600 pl-1">수정할 내용 (Edit here)</span>
-                        <textarea value={spellCorrection} onChange={e=>setSpellCorrection(e.target.value)} className="w-full h-40 p-3 rounded border-2 border-blue-200 bg-white text-sm focus:border-blue-500 outline-none resize-none text-gray-900" placeholder="수정할 내용을 입력하세요..."></textarea>
+                        <span className="text-xs font-bold opacity-100 text-blue-600 pl-1">수정한 내용 (Edited)</span>
+                        <textarea value={spellCorrection} onChange={e=>setSpellCorrection(e.target.value)} className="w-full h-40 p-3 rounded border-2 border-blue-200 bg-white text-sm focus:border-blue-500 outline-none resize-none text-gray-900" placeholder="맞춤법 검사 후 수정한 내용이 여기에 표시됩니다."></textarea>
                       </div>
                       <button onClick={applySpellCorrection} className="w-full bg-blue-600 text-white py-3 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md transition-colors">본문에 적용하기</button>
                     </div>
